@@ -1,0 +1,28 @@
+# ---------- 构建产物 ----------
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+
+# ---------- NuGet ----------
+*.nupkg
+packages/
+.nuget/
+
+# ---------- 调试 / 日志 ----------
+*.log
+*.dmp
+*.tmp
+logs/
+
+# ---------- 系统 ----------
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---------- 本地工具 ----------
+*.bak
+*.orig

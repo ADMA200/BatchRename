@@ -1,0 +1,27 @@
+# 默认让 git 自动判定文本/二进制，并在工作区使用 CRLF（Windows 工程习惯）
+* text=auto
+
+# 脚本保持平台原生换行
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.sh    text eol=lf
+
+# 源码统一 CRLF，避免跨工具 diff 噪声
+*.cs    text eol=crlf
+*.cpp   text eol=crlf
+*.h     text eol=crlf
+*.xaml  text eol=crlf
+*.csproj text eol=crlf
+*.vcxproj text eol=crlf
+*.sln   text eol=crlf
+*.md    text eol=crlf
+*.json  text eol=crlf
+*.xml   text eol=crlf
+
+# 二进制
+*.png   binary
+*.dll   binary
+*.exe   binary
+*.pri   binary
+*.pdb   binary

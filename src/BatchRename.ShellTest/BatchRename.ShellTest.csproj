@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>BatchRename.ShellTest</RootNamespace>
+    <AssemblyName>BatchRename.ShellTest</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!--
+    直接链接 App 的 Core/Models 源码编译，不引用 App 项目本身：
+    App 是 WinUI 3 (net10.0-windows)，控制台测不到。
+    规格书 §4.3 硬规则要求 Core 不依赖任何 WinUI 类型，这里正好用来验证。
+  -->
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\BatchRename.App\Core\*.cs" LinkBase="Core" />
+    <Compile Include="..\BatchRename.App\Models\*.cs" LinkBase="Models" />
+  </ItemGroup>
+
+</Project>

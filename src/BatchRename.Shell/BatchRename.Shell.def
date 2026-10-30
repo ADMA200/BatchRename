@@ -1,0 +1,5 @@
+LIBRARY BatchRename.Shell
+EXPORTS
+    DllGetClassObject       PRIVATE
+    DllCanUnloadNow         PRIVATE
+    DllGetActivationFactory PRIVATE

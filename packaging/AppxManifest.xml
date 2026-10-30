@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+    xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+    xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+    xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+
+  <Identity Name="BatchRename.Shell"
+            Publisher="CN=BatchRenameDev"
+            Version="1.0.0.0"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>批量重命名</DisplayName>
+    <PublisherDisplayName>BatchRename</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.19041.0"
+                        MaxVersionTested="10.0.26300.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+                 Executable="BatchRename.App\BatchRename.App.exe"
+                 uap10:TrustLevel="mediumIL"
+                 uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+          DisplayName="批量重命名"
+          Description="批量重命名文件与文件夹（PowerRename 风格）"
+          BackgroundColor="transparent"
+          AppListEntry="none"
+          Square150x150Logo="Assets\Square150x150Logo.png"
+          Square44x44Logo="Assets\Square44x44Logo.png" />
+
+      <Extensions>
+        <!-- ① COM 服务器：SurrogateServer = 由 dllhost 代理承载，不注入 explorer -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="BatchRename Context Menu">
+              <com:Class Id="A1B2C3D4-1111-4A2B-9C3D-000000000001"
+                         Path="BatchRename.Shell.dll"
+                         ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+
+        <!-- ② 命令注册：文件 与 选中文件夹 各一条 -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="BatchRenameFiles"
+                             Clsid="A1B2C3D4-1111-4A2B-9C3D-000000000001" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="BatchRenameFolders"
+                             Clsid="A1B2C3D4-1111-4A2B-9C3D-000000000001" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>
