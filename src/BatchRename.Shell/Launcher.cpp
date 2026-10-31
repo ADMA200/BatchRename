@@ -4,19 +4,33 @@
 using Microsoft::WRL::InProc;
 using Microsoft::WRL::Module;
 
-std::wstring ResolveAppPath()
+namespace {
+
+// 零 IO 取本 DLL 所在目录（尾带反斜杠）
+std::wstring ModuleDir()
 {
     HMODULE self = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&ResolveAppPath), &self);
+                       reinterpret_cast<LPCWSTR>(&ModuleDir), &self);
 
     wchar_t buf[MAX_PATH]{};
     GetModuleFileNameW(self, buf, MAX_PATH);
 
     std::wstring dir(buf);
-    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);
-    return dir + L"BatchRename.App\\BatchRename.App.exe";
+    return dir.substr(0, dir.find_last_of(L"\\/") + 1);
+}
+
+}  // namespace
+
+std::wstring ResolveAppPath()
+{
+    return ModuleDir() + L"BatchRename.App\\BatchRename.App.exe";
+}
+
+std::wstring ResolveMenuIconPath()
+{
+    return ModuleDir() + L"Assets\\menu.ico";
 }
 
 bool LaunchUI(const std::vector<std::wstring>& paths, DWORD* lastError)

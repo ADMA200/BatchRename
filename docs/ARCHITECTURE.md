@@ -129,6 +129,37 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
 1. **write-ahead**：journal 必须在动手**之前**落盘并 `Flush(true)`。攒到执行完再写，崩溃后就无法知道改过哪些文件。
 2. **CaseOnly 反向同样走两步**。不能假设 `IFileOperation` 会替我们处理大小写——它在 NTFS 上会把 `A.txt → a.txt` 判成"目标已存在"。
 
+## 5.2 单实例激活
+
+```
+首实例
+  ├─ new Mutex(true, "Local\BatchRename.SingleInstance", out createdNew) → true
+  ├─ 写 %LOCALAPPDATA%\BatchRename\active.pid
+  └─ 后台线程循环 WaitForConnectionAsync("BatchRename.Activate.{pid}")
+
+第二实例
+  ├─ createdNew == false
+  ├─ 读 active.pid → 连命名管道（1500ms 超时，超时则降级为新开窗口）
+  ├─ AllowSetForegroundWindow(首实例PID)   ← 缺这步，首实例的 SetForegroundWindow 会被前台锁静默拒绝
+  ├─ 写 int32 count + count × string（BinaryWriter，长度前缀 + UTF-8）
+  └─ Environment.Exit(0)
+
+首实例收到
+  └─ DispatcherQueue.TryEnqueue → 替换列表 → Activate() + SetForegroundWindow(hwnd)
+```
+
+无常驻形态下，单实例**只解决"连点两次出两个窗口"，不提供热复用**——窗口一关进程就没了。
+
+## 5.3 图标的三条独立链路
+
+| 位置 | 来源 | 换图后怎么生效 |
+|---|---|---|
+| 右键菜单 | `GetIcon` 返回 `Assets\menu.ico` | 替换文件即可，不碰 exe、不重新发布 |
+| exe / 窗口 | `app.ico`（csproj 的 `ApplicationIcon`） | 需重新 build，且受 Shell 图标缓存影响，可能要重启 explorer |
+| 任务栏 / 开始菜单 | 包的 `VisualElements` logo | 需 `Add-AppxPackage -Register` 重新注册（注册前要停净 App 与 dllhost，否则 `0x80073D02`） |
+
+任务栏这条还有个坑：只给默认 logo 时，系统会垫一块**强调色底板**（plating），圆角外露出 accent color。必须额外提供 `*.targetsize-*_altform-unplated.png` 变体。
+
 ## 6. 关键决策
 
 **为什么用稀疏包而不是传统注册表 COM 注册？**

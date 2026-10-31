@@ -4,6 +4,9 @@ using BatchRename.App.Models;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+// 只取 VirtualKey，别用 using Windows.System：那会引入另一个 DispatcherQueueTimer 造成二义性
+using VirtualKey = Windows.System.VirtualKey;
 
 namespace BatchRename.App;
 
@@ -24,7 +27,25 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
-        try { AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 700)); } catch { }
+        // 规格书 §7.4：自定义标题栏与 Mica 融合，不留白条
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+
+        // 系统 caption 高度设 Standard(32px)，与 AppTitleBar 的 32px 一致，
+        // 三个窗口按钮才会和标题文字对齐；按钮背景置透明，避免出现一条灰底
+        try
+        {
+            AppWindow.TitleBar.PreferredHeightOption =
+                Microsoft.UI.Windowing.TitleBarHeightOption.Standard;
+            AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+            AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        }
+        catch { }
+
+        try { AppWindow.Resize(new Windows.Graphics.SizeInt32(1180, 720)); } catch { }
+
+        // handledEventsToo = true：Space 会被 ListView 自己吃掉，必须在已处理阶段也能收到
+        RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnRootKeyDown), handledEventsToo: true);
 
         _debounce = DispatcherQueue.CreateTimer();
         _debounce.Interval = TimeSpan.FromMilliseconds(150);
@@ -38,12 +59,66 @@ public sealed partial class MainWindow : Window
                                    async () => await CheckPendingJournalAsync());
     }
 
+    /// <summary>规格书 §7.5 键盘。</summary>
+    private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case VirtualKey.Enter:
+                if (!_busy && ExecuteButton.IsEnabled)
+                {
+                    OnExecute(this, new RoutedEventArgs());
+                    e.Handled = true;
+                }
+                break;
+
+            case VirtualKey.Escape:
+                Close();
+                e.Handled = true;
+                break;
+
+            case VirtualKey.A when IsCtrlDown():
+                foreach (var item in _items) item.IsEnabled = true;
+                _resultMessage = null;
+                QueueRefresh();
+                e.Handled = true;
+                break;
+
+            case VirtualKey.Space:
+                if (ItemList.SelectedItem is RenameItem sel)
+                {
+                    sel.IsEnabled = !sel.IsEnabled;
+                    _resultMessage = null;
+                    QueueRefresh();
+                    e.Handled = true;
+                }
+                break;
+        }
+    }
+
+    private static bool IsCtrlDown() =>
+        Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    /// <summary>第二个实例转发过来的路径：替换列表，不新建窗口。</summary>
+    public void UpdateFromPaths(IReadOnlyList<string> paths)
+    {
+        _resultMessage = null;
+
+        _settingText = true;
+        FindBox.Text = "";
+        ReplaceBox.Text = "";
+        _settingText = false;
+
+        ReloadFromPaths(paths);
+    }
+
     private void LoadItems(ShellPayload payload)
     {
         if (!payload.FromShell)
         {
             ItemList.ItemsSource = Array.Empty<RenameItem>();
-            SummaryText.Text = "无参启动";
             FooterText.Text = "通过资源管理器右键「批量重命名」使用（拖放模式在 M5 实现）";
             return;
         }
@@ -60,6 +135,53 @@ public sealed partial class MainWindow : Window
     private void ReloadFromPaths(IEnumerable<string> paths)
     {
         _items = RenameEngine.CreateItems(paths);
+        ItemList.ItemsSource = _items;
+        RefreshPreview();
+    }
+
+    /// <summary>
+    /// 按 journal 的 from↔to 映射**就地**替换列表项，保持原有顺序和勾选状态。
+    /// 不能重建整个列表——那样没被改名的项会全部消失，
+    /// 而需求是"打开时选中多少就保留多少，用状态体现是否改过"。
+    /// </summary>
+    private void RemapItems(IReadOnlyList<JournalEntry> entries, bool markRenamed)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in entries.Where(x => x.Ok))
+        {
+            if (markRenamed) map[e.From] = e.To;
+            else map[e.To] = e.From;
+        }
+
+        var result = new List<RenameItem>(_items.Count);
+        foreach (var item in _items)
+        {
+            if (!map.TryGetValue(item.FullPath, out var target))
+            {
+                result.Add(item);
+                continue;
+            }
+
+            try
+            {
+                var isDir = Directory.Exists(target);
+                var attrs = isDir
+                    ? new DirectoryInfo(target).Attributes
+                    : File.GetAttributes(target);
+
+                var fresh = RenameEngine.CreateItem(target, isDir, attrs);
+                fresh.IsEnabled = item.IsEnabled;
+                fresh.IsRenamed = markRenamed;
+                result.Add(fresh);
+            }
+            catch
+            {
+                // 目标已消失（被别的程序挪走）：保留原项，不吞掉
+                result.Add(item);
+            }
+        }
+
+        _items = result;
         ItemList.ItemsSource = _items;
         RefreshPreview();
     }
@@ -113,7 +235,7 @@ public sealed partial class MainWindow : Window
     {
         if (_items.Count == 0)
         {
-            ErrorBar.IsOpen = false;
+            SetError(null);
             ExecuteButton.IsEnabled = false;
             return;
         }
@@ -122,27 +244,36 @@ public sealed partial class MainWindow : Window
         var outcome = RenameEngine.Run(_items, BuildRule());
         sw.Stop();
 
-        if (outcome.RegexError is not null)
-        {
-            ErrorBar.Message = "正则无效：" + outcome.RegexError;
-            ErrorBar.IsOpen = true;
-        }
-        else
-        {
-            ErrorBar.IsOpen = false;
-        }
+        SetError(outcome.RegexError is not null ? "正则无效：" + outcome.RegexError : null);
 
         var willRename = _items.Count(i => i.IsEnabled && i.State is ItemState.Ok or ItemState.Warning);
         var conflicts = _items.Count(i => i.State is ItemState.ConflictInBatch or ItemState.ConflictOnDisk);
         var invalid = _items.Count(i => i.State == ItemState.Invalid);
 
-        SummaryText.Text = $"{_items.Count} 项";
-
         // 执行/撤销后优先显示结果文案，别被预览统计冲掉
         FooterText.Text = _resultMessage
-            ?? $"将改名 {willRename} · 无效 {invalid} · 冲突 {conflicts} · 引擎 {sw.ElapsedMilliseconds}ms";
+            ?? $"共 {_items.Count} 项 · 将改名 {willRename} · 无效 {invalid} · 冲突 {conflicts} · 引擎 {sw.ElapsedMilliseconds}ms";
 
         ExecuteButton.IsEnabled = !_busy && !outcome.HasBlockingError && willRename > 0;
+    }
+
+    /// <summary>
+    /// 横幅用 Visibility 而不是 IsOpen 控制：收起的 InfoBar 仍会占一行高度，
+    /// 把预览卡片顶下去，和左栏第一个控件错位。
+    /// </summary>
+    private void SetError(string? message)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            ErrorBar.IsOpen = false;
+            ErrorBar.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            ErrorBar.Message = message;
+            ErrorBar.IsOpen = true;
+            ErrorBar.Visibility = Visibility.Visible;
+        }
     }
 
     private void SetBusy(bool busy)
@@ -181,8 +312,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ErrorBar.Message = "无法写入撤销日志：" + ex.Message;
-            ErrorBar.IsOpen = true;
+            SetError("无法写入撤销日志：" + ex.Message);
             return;
         }
 
@@ -204,12 +334,11 @@ public sealed partial class MainWindow : Window
             if (result.Failed > 0)
             {
                 var first = result.Entries.FirstOrDefault(x => !x.Ok);
-                ErrorBar.Message = $"部分失败：{first?.Error ?? "未知原因"}";
-                ErrorBar.IsOpen = true;
+                SetError($"部分失败：{first?.Error ?? "未知原因"}");
             }
             else
             {
-                ErrorBar.IsOpen = false;
+                SetError(null);
             }
 
             // 列表切到执行后的真实路径，并清空规则（避免又显示成"要再改一次"）
@@ -218,7 +347,8 @@ public sealed partial class MainWindow : Window
             ReplaceBox.Text = "";
             _settingText = false;
 
-            ReloadFromPaths(journal.Entries.Where(x => x.Ok).Select(x => x.To));
+            // 保留全部项：只把成功的项就地换成新路径并标记「已改名」，其余原样留着
+            RemapItems(journal.Entries, markRenamed: true);
 
             // 兜底：TextChanged 是异步派发的，_settingText 在事件到达前已复位，
             // 会被当成"用户改了规则"而清掉结果文案。低优先级再写一次，确保结果条留住。
@@ -250,8 +380,7 @@ public sealed partial class MainWindow : Window
 
             if (outcome.Rejected)
             {
-                ErrorBar.Message = "无法撤销：" + outcome.RejectReason;
-                ErrorBar.IsOpen = true;
+                SetError("无法撤销：" + outcome.RejectReason);
                 return;
             }
 
@@ -262,11 +391,10 @@ public sealed partial class MainWindow : Window
 
             if (outcome.Invalid > 0 || outcome.Failed > 0)
             {
-                ErrorBar.Message = "部分项目未能回滚（可能已被移动或占用）";
-                ErrorBar.IsOpen = true;
+                SetError("部分项目未能回滚（可能已被移动或占用）");
             }
 
-            ReloadFromPaths(journal.Entries.Where(x => x.Ok).Select(x => x.From));
+            RemapItems(journal.Entries, markRenamed: false);
         }
         finally
         {

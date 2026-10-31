@@ -11,7 +11,9 @@ public enum ItemState
     Warning,
     Invalid,
     ConflictInBatch,
-    ConflictOnDisk
+    ConflictOnDisk,
+    /// <summary>本批次里已经改过名的项（执行成功后标记，撤销后清除）</summary>
+    Renamed
 }
 
 /// <summary>规格书 §8.1。字段语义严格对齐，State/Message 由引擎产出。</summary>
@@ -64,6 +66,17 @@ public sealed class RenameItem : INotifyPropertyChanged
     {
         get => _caseOnly;
         set => Set(ref _caseOnly, value);
+    }
+
+    /// <summary>
+    /// 已在本批次中改名成功。置位后引擎不再对它应用规则，
+    /// 列表里始终保留全部项，只靠 State 区分"改过 / 没改"。
+    /// </summary>
+    private bool _isRenamed;
+    public bool IsRenamed
+    {
+        get => _isRenamed;
+        set => Set(ref _isRenamed, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

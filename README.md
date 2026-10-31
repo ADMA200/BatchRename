@@ -11,10 +11,10 @@ Windows 11 资源管理器右键菜单里的批量重命名工具，对标 Power
 | **M1** | 右键菜单出现 + 拉起窗口 + 路径透传 | ✅ 已通过验收 |
 | **M2** | 重命名引擎 + 实时预览（33 项自动断言） | 引擎 ✅ / UI ✅ |
 | **M3** | 执行 + 撤销（`IFileOperation` + WAL journal） | ✅ 已通过真机验证 |
-| **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ⬜ 未开始 |
+| **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ✅ 已通过真机验证 |
 | **M5** | 安装闭环 + 传统 verb 兜底 | ⬜ 未开始 |
 
-当前基线标签：`v0.1-M1M2`（M3 完成后打 `v0.2-M3`）
+当前基线标签：`v0.3-M4`
 
 ## 环境要求
 
@@ -106,6 +106,8 @@ BatchRename\
 │  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行
 │  │  │  ├─ UndoJournal.cs           WAL journal + 反向执行
 │  │  │  └─ NativeMethods.txt        CsWin32 输入清单
+│  │  ├─ Services\
+│  │  │  └─ SingleInstanceGate.cs    命名 Mutex + 命名管道激活
 │  │  └─ Models\RenameItem.cs
 │  └─ BatchRename.ShellTest\ 引擎+执行器断言测试（控制台，67 项）
 ├─ packaging\

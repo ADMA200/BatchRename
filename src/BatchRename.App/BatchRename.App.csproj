@@ -6,6 +6,7 @@
     <RootNamespace>BatchRename.App</RootNamespace>
     <AssemblyName>BatchRename.App</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
 

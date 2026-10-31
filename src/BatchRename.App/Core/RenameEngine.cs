@@ -102,6 +102,15 @@ public static class RenameEngine
 
         foreach (var item in items)
         {
+            // 本批次已改过名的项不再参与规则计算，保持"已改名"状态
+            if (item.IsRenamed)
+            {
+                item.NewName = item.OriginalName;
+                item.State = ItemState.Renamed;
+                item.Message = "已改名";
+                continue;
+            }
+
             var newName = BuildNewName(item, rule, regex, ref anyTimeout);
             item.NewName = newName;
             Validate(item);
@@ -236,7 +245,7 @@ public static class RenameEngine
         var map = new Dictionary<(string Dir, string Name), List<RenameItem>>();
         foreach (var item in items)
         {
-            if (item.State == ItemState.Invalid || item.State == ItemState.Unchanged) continue;
+            if (item.State is ItemState.Invalid or ItemState.Unchanged or ItemState.Renamed) continue;
 
             var key = (item.Directory, item.NewName);
             if (!map.TryGetValue(key, out var bucket))

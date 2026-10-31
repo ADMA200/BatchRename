@@ -12,6 +12,7 @@ public sealed class StateToBrushConverter : IValueConverter
     private static readonly SolidColorBrush Warning = new(Color.FromArgb(255, 224, 178, 84));
     private static readonly SolidColorBrush Unchanged = new(Color.FromArgb(255, 150, 150, 150));
     private static readonly SolidColorBrush Ok = new(Color.FromArgb(255, 132, 200, 132));
+    private static readonly SolidColorBrush Renamed = new(Color.FromArgb(255, 120, 175, 225));
 
     public object Convert(object value, Type targetType, object parameter, string language)
     {
@@ -21,6 +22,7 @@ public sealed class StateToBrushConverter : IValueConverter
                 ItemState.Invalid or ItemState.ConflictInBatch or ItemState.ConflictOnDisk => Invalid,
                 ItemState.Warning => Warning,
                 ItemState.Unchanged => Unchanged,
+                ItemState.Renamed => Renamed,
                 _ => Ok
             }
             : Unchanged;

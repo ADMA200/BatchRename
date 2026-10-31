@@ -70,8 +70,10 @@ IFACEMETHODIMP BatchRenameCommand::GetIcon(IShellItemArray* /*psia*/, PWSTR* pps
     if (!ppszIcon) return E_POINTER;
     *ppszIcon = nullptr;
 
-    // 带 ,0 索引更稳；不做 PathFileExists（返回 E_NOTIMPL 会让图标位空白）
-    const std::wstring icon = ResolveAppPath() + L",0";
+    // 用独立的 Assets\menu.ico，而不是 exe 图标：
+    //   exe 换图标后 dllhost 仍可能命中 Shell 的旧图标缓存，菜单会继续显示空图标。
+    //   直接给一个 ico 文件路径最直接，也让菜单图标可以和应用图标分开设计。
+    const std::wstring icon = ResolveMenuIconPath();
     return SHStrDupW(icon.c_str(), ppszIcon);
 }
 

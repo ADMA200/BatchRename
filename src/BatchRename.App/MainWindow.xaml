@@ -3,156 +3,205 @@
     x:Class="BatchRename.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:models="using:BatchRename.App.Models"
     xmlns:local="using:BatchRename.App"
     Title="批量重命名">
 
-    <Grid Padding="16" RowSpacing="10">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid">
         <Grid.Resources>
             <local:StateToBrushConverter x:Key="StateBrush" />
         </Grid.Resources>
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 0. 标题 + 汇总 -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="12">
-            <TextBlock Text="批量重命名" Style="{StaticResource SubtitleTextBlockStyle}" />
-            <TextBlock x:Name="SummaryText"
-                       VerticalAlignment="Center"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+        <!-- 标题栏：与系统 caption 同高（32px） -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="32" Padding="16,0">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
+                <FontIcon Glyph="&#xE8AC;" FontSize="12" />
+                <TextBlock Text="批量重命名" Style="{StaticResource CaptionTextBlockStyle}" />
+            </StackPanel>
+        </Grid>
 
-        <!-- 1. 规则工具条 -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
-            <TextBox x:Name="FindBox" Width="170" PlaceholderText="查找"
-                     TextChanged="OnRuleChanged" />
-            <TextBox x:Name="ReplaceBox" Width="170" PlaceholderText="替换为"
-                     TextChanged="OnRuleChanged" />
-
-            <ComboBox x:Name="ScopeBox" Width="120" SelectedIndex="0" SelectionChanged="OnRuleChanged">
-                <ComboBoxItem Content="两者" />
-                <ComboBoxItem Content="仅文件名" />
-                <ComboBoxItem Content="仅扩展名" />
-            </ComboBox>
-
-            <ComboBox x:Name="CaseBox" Width="140" SelectedIndex="0" SelectionChanged="OnRuleChanged">
-                <ComboBoxItem Content="不转换" />
-                <ComboBoxItem Content="全大写" />
-                <ComboBoxItem Content="全小写" />
-                <ComboBoxItem Content="每词首字母大写" />
-            </ComboBox>
-
-            <CheckBox x:Name="CaseSensitiveBox" Content="区分大小写" Click="OnRuleChanged" />
-            <CheckBox x:Name="RegexBox" Content="正则" Click="OnRuleChanged" />
-        </StackPanel>
-
-        <!-- 2. 错误横幅 -->
-        <InfoBar Grid.Row="2" x:Name="ErrorBar" Severity="Error" IsOpen="False" />
-
-        <!-- 3. 两栏预览 -->
-        <Border Grid.Row="3"
-                BorderThickness="1"
-                CornerRadius="8"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
-            <ListView x:Name="ItemList" SelectionMode="None">
-                <ListView.Header>
-                    <Grid Padding="12,8" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="40" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="28" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="130" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="1" Text="原名称"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Column="3" Text="新名称"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Column="4" Text="状态"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    </Grid>
-                </ListView.Header>
-
-                <ListView.ItemTemplate>
-                    <!--
-                        这里用 {Binding} 而不是 {x:Bind}：Window 不是 FrameworkElement，
-                        x:Bind 生成的代码在 Window 根下无法编译（MainWindow.g.cs 会报 CS1503）。
-                        ListView 有 UI 虚拟化，运行时绑定开销可以忽略。
-                    -->
-                    <DataTemplate>
-                        <Grid Padding="0,2" ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="40" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="28" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="130" />
-                            </Grid.ColumnDefinitions>
-
-                            <CheckBox Grid.Column="0"
-                                      MinWidth="0"
-                                      Click="OnItemEnabledChanged"
-                                      IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
-
-                            <TextBlock Grid.Column="1"
-                                       Text="{Binding OriginalName}"
-                                       TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center" />
-
-                            <FontIcon Grid.Column="2"
-                                      Glyph="&#xE72A;"
-                                      FontSize="12"
-                                      Opacity="0.4"
-                                      VerticalAlignment="Center" />
-
-                            <TextBlock Grid.Column="3"
-                                       Text="{Binding NewName}"
-                                       Foreground="{Binding State, Converter={StaticResource StateBrush}}"
-                                       TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center" />
-
-                            <TextBlock Grid.Column="4"
-                                       Text="{Binding Message}"
-                                       Foreground="{Binding State, Converter={StaticResource StateBrush}}"
-                                       TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center" />
-                        </Grid>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
-        </Border>
-
-        <!-- 4. 底栏：结果条 + 执行/撤销 -->
-        <Grid Grid.Row="4" ColumnSpacing="12">
+        <!-- 只有一屏内容，没有独立的底部行：按钮进左栏，结果条进卡片 -->
+        <Grid Grid.Row="1" Padding="16,0,16,12" ColumnSpacing="16">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <TextBlock x:Name="FooterText"
-                       VerticalAlignment="Center"
-                       TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <!-- ============ 左：操作区（底部为撤销/执行） ============ -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-            <ProgressRing x:Name="BusyRing" Grid.Column="1"
-                          Width="20" Height="20" IsActive="False" />
+                <ScrollViewer Grid.Row="0"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollMode="Disabled">
+                    <!-- 不加顶部 padding：这样第一个控件和右侧卡片顶边严格对齐 -->
+                    <StackPanel Spacing="14">
+                        <TextBox x:Name="FindBox" PlaceholderText="查找"
+                                 TextChanged="OnRuleChanged" />
 
-            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-                <Button x:Name="UndoButton" Content="撤销" Click="OnUndo" IsEnabled="False">
-                    <Button.KeyboardAccelerators>
-                        <KeyboardAccelerator Key="Z" Modifiers="Control" />
-                    </Button.KeyboardAccelerators>
-                </Button>
-                <Button x:Name="ExecuteButton" Content="执行" Click="OnExecute"
-                        IsEnabled="False" Style="{StaticResource AccentButtonStyle}" />
-            </StackPanel>
+                        <CheckBox x:Name="CaseSensitiveBox" Content="区分大小写"
+                                  MinWidth="0" Click="OnRuleChanged" />
+
+                        <CheckBox x:Name="RegexBox" Content="使用正则表达式"
+                                  MinWidth="0" Click="OnRuleChanged" />
+
+                        <TextBox x:Name="ReplaceBox" PlaceholderText="替换为"
+                                 TextChanged="OnRuleChanged" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="应用于" Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ComboBox x:Name="ScopeBox" HorizontalAlignment="Stretch"
+                                      SelectedIndex="0" SelectionChanged="OnRuleChanged">
+                                <ComboBoxItem Content="两者" />
+                                <ComboBoxItem Content="仅文件名" />
+                                <ComboBoxItem Content="仅扩展名" />
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="转换大小写" Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ComboBox x:Name="CaseBox" HorizontalAlignment="Stretch"
+                                      SelectedIndex="0" SelectionChanged="OnRuleChanged">
+                                <ComboBoxItem Content="不转换" />
+                                <ComboBoxItem Content="全大写" />
+                                <ComboBoxItem Content="全小写" />
+                                <ComboBoxItem Content="每词首字母大写" />
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <StackPanel Grid.Row="1" Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            Spacing="8" Margin="0,10,0,0">
+                    <Button x:Name="UndoButton" Content="撤销" Click="OnUndo" IsEnabled="False">
+                        <Button.KeyboardAccelerators>
+                            <KeyboardAccelerator Key="Z" Modifiers="Control" />
+                        </Button.KeyboardAccelerators>
+                    </Button>
+                    <Button x:Name="ExecuteButton" Content="执行" Click="OnExecute"
+                            IsEnabled="False" Style="{StaticResource AccentButtonStyle}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ============ 右：预览卡片（结果条固定在卡片内底部） ============ -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 用 Visibility 而不是 IsOpen 控制显隐：收起的 InfoBar 不能占位，
+                     否则卡片会被它顶下去，和左栏第一行错位 -->
+                <InfoBar Grid.Row="0" x:Name="ErrorBar"
+                         Severity="Error"
+                         Visibility="Collapsed"
+                         Margin="0,0,0,8" />
+
+                <Border Grid.Row="1"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <ListView Grid.Row="0" x:Name="ItemList" SelectionMode="Single">
+                            <ListView.Header>
+                                <Grid Padding="12,8" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="40" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="28" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="110" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="1" Text="原名称"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Grid.Column="3" Text="新名称"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Grid.Column="4" Text="状态"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Grid>
+                            </ListView.Header>
+
+                            <ListView.ItemTemplate>
+                                <!--
+                                    用 {Binding} 而不是 {x:Bind}：Window 不是 FrameworkElement，
+                                    x:Bind 生成的代码在 Window 根下无法编译。ListView 有虚拟化，开销可忽略。
+                                -->
+                                <DataTemplate>
+                                    <Grid Padding="0,2" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="110" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <CheckBox Grid.Column="0" MinWidth="0"
+                                                  Click="OnItemEnabledChanged"
+                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding OriginalName}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" />
+
+                                        <FontIcon Grid.Column="2" Glyph="&#xE72A;" FontSize="12"
+                                                  Opacity="0.4" VerticalAlignment="Center" />
+
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding NewName}"
+                                                   Foreground="{Binding State, Converter={StaticResource StateBrush}}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" />
+
+                                        <TextBlock Grid.Column="4"
+                                                   Text="{Binding Message}"
+                                                   Foreground="{Binding State, Converter={StaticResource StateBrush}}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+
+                        <!-- 结果条：卡片内底部，右对齐 -->
+                        <Grid Grid.Row="1" Padding="12,4,12,8">
+                            <StackPanel Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Spacing="8">
+                                <ProgressRing x:Name="BusyRing" Width="16" Height="16" IsActive="False" />
+                                <TextBlock x:Name="FooterText"
+                                           FontSize="12"
+                                           MaxLines="1"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </Window>
