@@ -384,6 +384,88 @@ Console.WriteLine("\n== 13. CaseOnly 端到端撤销 ==");
     }
 }
 
+Console.WriteLine("\n== 14. 自动编号（§8.8 可选策略） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "a.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "b.txt"), "x");
+
+        // 磁盘冲突：a.txt → b.txt（b 已存在），开自动编号 → b (1).txt
+        var items = RenameEngine.CreateItems(new[] { Path.Combine(root, "a.txt") });
+        var rule = new RenameRule { Find = "a", Replace = "b", Scope = RenameScope.StemOnly };
+
+        RenameEngine.Run(items, rule, autoNumber: false);
+        Eq("不开编号 → 磁盘冲突", ItemState.ConflictOnDisk, items[0].State);
+
+        RenameEngine.Run(items, rule, autoNumber: true);
+        Eq("开编号后状态 Ok", ItemState.Ok, items[0].State);
+        Eq("编号加在 Stem 尾部", "b (1).txt", items[0].NewName);
+        Eq("编号提示文案", "自动编号 (1)", items[0].Message);
+
+        // 批内互撞：两个都改成 x.txt → 第一个保留原名，第二个 x (1).txt
+        File.WriteAllText(Path.Combine(root, "c.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "d.txt"), "x");
+        var both = RenameEngine.CreateItems(new[]
+        {
+            Path.Combine(root, "c.txt"),
+            Path.Combine(root, "d.txt")
+        });
+        RenameEngine.Run(both,
+            new RenameRule { Find = "c", Replace = "x", Scope = RenameScope.StemOnly },
+            autoNumber: true);
+        // 只有 c.txt 命中 → x.txt；d.txt 不变
+        Eq("命中项改成 x.txt", "x.txt", both[0].NewName);
+        Eq("命中项状态 Ok", ItemState.Ok, both[0].State);
+
+        // 真正的批内同名：两条规则都指向同名的场景用正则造
+        File.WriteAllText(Path.Combine(root, "p1.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "p2.txt"), "x");
+        var dup = RenameEngine.CreateItems(new[]
+        {
+            Path.Combine(root, "p1.txt"),
+            Path.Combine(root, "p2.txt")
+        });
+        RenameEngine.Run(dup,
+            new RenameRule { UseRegex = true, Find = @"^p\d$", Replace = "same", Scope = RenameScope.StemOnly },
+            autoNumber: true);
+        Eq("第一个保留 same.txt", "same.txt", dup[0].NewName);
+        Eq("第二个自动编号", "same (1).txt", dup[1].NewName);
+        True("两项都可执行", dup.All(d => d.State == ItemState.Ok));
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 15. 崩溃恢复：Pending journal（§8.10.2） ==");
+{
+    UndoJournal? pending = null;
+    try
+    {
+        pending = UndoJournal.Create("pending-test", new[]
+        {
+            new JournalEntry { From = @"C:\nope\a.txt", To = @"C:\nope\b.txt", Ok = true }
+        });
+        pending.Save();
+        Eq("初始为 Pending", JournalState.Pending, pending.State);
+
+        var found = UndoJournal.FindPending();
+        True("FindPending 能定位到它", found is not null && found.Id == pending.Id);
+
+        var outcome = await pending.UndoAsync();
+        True("Pending 批次拒绝撤销（需先回滚未完成）", outcome.Rejected, outcome.RejectReason);
+    }
+    finally
+    {
+        try { if (pending is not null && File.Exists(pending.FilePath)) File.Delete(pending.FilePath); } catch { }
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine(new string('-', 56));
 Console.WriteLine($"检查 {checks} 项，失败 {failures} 项");

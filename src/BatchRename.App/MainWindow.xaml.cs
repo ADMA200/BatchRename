@@ -195,6 +195,18 @@ public sealed partial class MainWindow : Window
 
     private void OnItemEnabledChanged(object sender, RoutedEventArgs e) => OnUserRuleChanged();
 
+    /// <summary>全选 / 全不选（规格书 §7.4 底栏）。</summary>
+    private void OnSelectAllChanged(object sender, RoutedEventArgs e)
+    {
+        if (_items.Count == 0) return;
+
+        var on = SelectAllBox.IsChecked == true;
+        foreach (var item in _items) item.IsEnabled = on;
+
+        _resultMessage = null;
+        QueueRefresh();
+    }
+
     /// <summary>用户主动改规则 → 清掉上一次的执行结果文案，恢复预览统计。</summary>
     private void OnUserRuleChanged()
     {
@@ -241,7 +253,7 @@ public sealed partial class MainWindow : Window
         }
 
         var sw = Stopwatch.StartNew();
-        var outcome = RenameEngine.Run(_items, BuildRule());
+        var outcome = RenameEngine.Run(_items, BuildRule(), AutoNumberBox.IsChecked == true);
         sw.Stop();
 
         SetError(outcome.RegexError is not null ? "正则无效：" + outcome.RegexError : null);
@@ -321,6 +333,16 @@ public sealed partial class MainWindow : Window
         {
             var runner = new FileOperationRunner();
             var result = await runner.RunAsync(targets);
+
+            // 规格书 §8.10.2：state=Applied 时必须带上逐项真实结果。
+            // 不回写的话，失败项在 journal 里仍标记为 Ok=true，
+            // 撤销会去回滚那些根本没改名的项，白算一次"已失效"。
+            var byFrom = new Dictionary<string, RenameEntryResult>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in result.Entries) byFrom[r.From] = r;
+            foreach (var entry in journal.Entries)
+            {
+                if (byFrom.TryGetValue(entry.From, out var r)) entry.Ok = r.Ok;
+            }
 
             journal.State = JournalState.Applied;
             journal.Save();

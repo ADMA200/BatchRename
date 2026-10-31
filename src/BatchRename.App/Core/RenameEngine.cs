@@ -90,7 +90,11 @@ public static class RenameEngine
         return list;
     }
 
-    public static EngineOutcome Run(IReadOnlyList<RenameItem> items, RenameRule rule)
+    /// <param name="autoNumber">
+    /// 冲突时自动编号（§8.8 可选策略，默认关）。
+    /// 编号加在 **Stem 尾部**：a.txt → a (1).txt，不是 a.txt (1)。
+    /// </param>
+    public static EngineOutcome Run(IReadOnlyList<RenameItem> items, RenameRule rule, bool autoNumber = false)
     {
         var regex = rule.Compile(out var regexError);
         if (regexError is not null)
@@ -118,6 +122,8 @@ public static class RenameEngine
 
         MarkBatchConflicts(items);
         MarkDiskConflicts(items);
+
+        if (autoNumber) ApplyAutoNumbering(items);
 
         var blocking = anyTimeout || items.Any(i =>
             i.IsEnabled && (i.State == ItemState.Invalid ||
@@ -308,6 +314,85 @@ public static class RenameEngine
 
                 Set(item, ItemState.ConflictOnDisk, "目标已存在");
             }
+        }
+    }
+
+    /// <summary>
+    /// 规格书 §8.8 的可选策略：冲突时自动编号。
+    /// `a.txt` → `a (1).txt`（加在 Stem 尾部，不是 `a.txt (1)`），最多试 999 次。
+    /// </summary>
+    private static void ApplyAutoNumbering(IReadOnlyList<RenameItem> items)
+    {
+        var conflicts = items
+            .Where(i => i.State is ItemState.ConflictInBatch or ItemState.ConflictOnDisk)
+            .ToList();
+        if (conflicts.Count == 0) return;
+
+        var occupied = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        HashSet<string> SetFor(string dir)
+        {
+            if (occupied.TryGetValue(dir, out var cached)) return cached;
+
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // 本批会让出的源名，不算占用
+            var vacating = new HashSet<string>(
+                items.Where(i => string.Equals(i.Directory, dir, StringComparison.OrdinalIgnoreCase)
+                                 && i.State is ItemState.Ok or ItemState.Warning)
+                     .Select(i => i.OriginalName),
+                StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                foreach (var p in Directory.EnumerateFileSystemEntries(dir))
+                {
+                    var name = Path.GetFileName(p);
+                    if (!vacating.Contains(name)) set.Add(name);
+                }
+            }
+            catch
+            {
+                // 目录不可读：只靠批内占用集合判断
+            }
+
+            occupied[dir] = set;
+            return set;
+        }
+
+        // 先把已确定不冲突的新名占住，避免编号撞上它们
+        foreach (var item in items)
+        {
+            if (item.State is ItemState.Ok or ItemState.Warning or ItemState.Renamed)
+                SetFor(item.Directory).Add(item.NewName);
+        }
+
+        foreach (var item in conflicts)
+        {
+            var set = SetFor(item.Directory);
+            var ext = item.IsDirectory ? "" : item.Ext;
+
+            var stem = ext.Length > 0 && item.NewName.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
+                ? item.NewName[..^ext.Length]
+                : item.NewName;
+
+            var resolved = false;
+            // n=0 先试原名：批内互撞时第一个项应该保留 x.txt，而不是被编成 x (1).txt
+            for (var n = 0; n <= 999; n++)
+            {
+                var candidate = n == 0 ? item.NewName : $"{stem} ({n}){ext}";
+                if (set.Contains(candidate)) continue;
+
+                item.NewName = candidate;
+                item.State = ItemState.Ok;
+                item.Message = n == 0 ? null : $"自动编号 ({n})";
+                item.CaseOnly = false;
+                set.Add(candidate);
+                resolved = true;
+                break;
+            }
+
+            if (!resolved) item.Message = "自动编号失败（已尝试 999 次）";
         }
     }
 }

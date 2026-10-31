@@ -81,12 +81,18 @@
                                 <ComboBoxItem Content="每词首字母大写" />
                             </ComboBox>
                         </StackPanel>
+
+                        <CheckBox x:Name="AutoNumberBox" Content="冲突时自动编号"
+                                  MinWidth="0" Click="OnRuleChanged" />
                     </StackPanel>
                 </ScrollViewer>
 
                 <StackPanel Grid.Row="1" Orientation="Horizontal"
                             HorizontalAlignment="Right"
                             Spacing="8" Margin="0,10,0,0">
+                    <CheckBox x:Name="SelectAllBox" Content="全选"
+                              MinWidth="0" IsChecked="True"
+                              Checked="OnSelectAllChanged" Unchecked="OnSelectAllChanged" />
                     <Button x:Name="UndoButton" Content="撤销" Click="OnUndo" IsEnabled="False">
                         <Button.KeyboardAccelerators>
                             <KeyboardAccelerator Key="Z" Modifiers="Control" />

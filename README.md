@@ -82,7 +82,7 @@ dotnet build src\BatchRename.ShellTest\BatchRename.ShellTest.csproj -c Release
 dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRename.ShellTest.dll
 ```
 
-覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 性能预算 / **执行器 + 撤销 journal（真实文件）**，共 **67 项**。退出码非 0 表示有断言失败。
+覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 恢复，共 **79 项**。退出码非 0 表示有断言失败。
 
 > ⚠️ 测试 10–13 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**。
 > 但只要在 Windows 上跑这些测试，就别同时开着 `docs\samples` 做手工改名测试，避免互相干扰。
@@ -137,11 +137,12 @@ BatchRename\
 
 ## 已知限制
 
-- **「自动编号」冲突策略未实现**：目前只有「阻止」一档，目标已存在时执行按钮直接禁用
-- **执行期无逐项进度**：`IFileOperation` 批量执行拿不到细粒度回调，只用不确定态进度环；`CancellationToken` 已接入但 UI 上还没有取消按钮
-- **崩溃恢复对话框未做破坏性实测**（`taskkill` 打断执行）
+- **执行期无逐项进度**：`IFileOperation` 批量执行拿不到细粒度回调，只有不确定态进度环；`RunAsync` 已接受 `CancellationToken` 但 UI 尚未接取消按钮
+- **部分失败只显示首条原因**：未做 §8.9.5 的失败清单对话框
+- `Esc` 关闭前没有"有未执行改动"的二次确认
 - 未做 `Shift+右键` 传统菜单兜底（M5）
-- 未做拖放启动、单实例（M4/M5）
+- 未做拖放启动（M5）
+- 图标为临时方案（应用 Aa / 菜单铅笔），任务栏 plating 未彻底解决
 - 不支持递归子文件夹、云盘/回收站等虚拟项（设计上不做）
 
 ## 历史坑（详见 SPEC v1.1 / v1.2 修订记录）
