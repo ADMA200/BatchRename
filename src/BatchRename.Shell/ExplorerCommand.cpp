@@ -55,17 +55,13 @@ void ReportLaunchFailure(DWORD code)
 
 }  // namespace
 
-IFACEMETHODIMP BatchRenameCommand::GetTitle(IShellItemArray* psia, PWSTR* ppszName) noexcept
+IFACEMETHODIMP BatchRenameCommand::GetTitle(IShellItemArray* /*psia*/, PWSTR* ppszName) noexcept
 {
     if (!ppszName) return E_POINTER;
     *ppszName = nullptr;
 
-    DWORD count = 0;
-    if (psia && SUCCEEDED(psia->GetCount(&count)) && count > 0) {
-        wchar_t buf[128]{};
-        swprintf_s(buf, L"批量重命名 (%u)", count);
-        return SHStrDupW(buf, ppszName);
-    }
+    // 固定文案：选中数量在打开的窗口里看更直观（§9 M1 验收后调整），
+    // 菜单里带 "(N)" 反而让每次右键的标题都不一样，干扰视觉定位。
     return SHStrDupW(L"批量重命名", ppszName);
 }
 

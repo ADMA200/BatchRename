@@ -96,12 +96,38 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
 |---|---|---|
 | `Core/NameSplitter` | 主名/扩展名切分 | 只切最后一层；目录永不切；`i==0` 视为 dotfile |
 | `Core/RenameRule` | 文本/正则替换 + 四种大小写 | 大小写一律 `Invariant`；正则优先 `NonBacktracking`，回退带 250ms 超时 |
-| `Core/RenameEngine` | 编排 + 九条校验 + 批内互撞 | 替换**先**、大小写**后**；作用域「两者」绝不拼串 |
+| `Core/RenameEngine` | 编排 + 九条校验 + 冲突检测 | 替换**先**、大小写**后**；作用域「两者」绝不拼串；磁盘冲突必须在这里拦 |
+| `Core/FileOperationRunner` | STA + IFileOperation 执行 | CaseOnly 走 `File.Move` 两步；结果用 `ExistsExact` 校验 |
+| `Core/UndoJournal` | WAL + 失效判定 + 反向执行 | 先落盘再动手；`Flush(true)` 强制刷盘 |
 | `Models/RenameItem` | 单项数据 | `INotifyPropertyChanged`，`State` 驱动 UI 配色 |
 | `App/ShellPayload` | stdin 解析 | `Encoding.Unicode` + `'\0'` 切分 |
 | `App/MainWindow` | 预览 UI | 150ms 防抖；DataTemplate 用 `{Binding}`（`Window` 根不支持 `x:Bind`） |
 | `Shell/Launcher` | 定位 exe + 管道启动 | 路径靠 `GetModuleFileNameW` 推导，零 IO |
 | `Shell/Log` | 双写日志 | 1MB 循环；**只能在 Invoke 路径调用** |
+
+## 5.1 执行与撤销数据流
+
+```
+点击「执行」
+  ├─ UndoJournal.Create(...) → Save()          [write-ahead: state=Pending, Flush(true)]
+  ├─ FileOperationRunner.RunAsync(items)
+  │    ├─ 新开 STA 线程 + CoInitializeEx(APARTMENTTHREADED)
+  │    ├─ CaseOnly 项 → File.Move 两步（原名 → $br$<guid>$ → 目标名，第二步失败回滚第一步）
+  │    ├─ 普通项     → IFileOperation: SetOperationFlags → RenameItem × N → PerformOperations
+  │    └─ 逐项用 ExistsExact 校验（区分大小写！）
+  └─ 回写 state=Applied → Save() → Prune(保留 20 个)
+
+点击「撤销」/ Ctrl+Z
+  ├─ IsUndoable：已撤销过 / Pending / 超 7 天 → 拒绝
+  ├─ 逐项失效判定：to 不存在，或 from 被真实占用（两处都用 ExistsExact）
+  ├─ 反向构造 RenameItem（CaseOnly 标记原样保留）→ 复用同一个 Runner
+  └─ state=Undone → Save()
+```
+
+两个硬约束：
+
+1. **write-ahead**：journal 必须在动手**之前**落盘并 `Flush(true)`。攒到执行完再写，崩溃后就无法知道改过哪些文件。
+2. **CaseOnly 反向同样走两步**。不能假设 `IFileOperation` 会替我们处理大小写——它在 NTFS 上会把 `A.txt → a.txt` 判成"目标已存在"。
 
 ## 6. 关键决策
 
@@ -168,6 +194,9 @@ link /nologo /DLL /MACHINE:X64 /DEF:BatchRename.Shell.def /OUT:"..\..\bin\publis
 | 点了**没反应也没报错** | 事件查看器 Application 日志 | App 崩在 `Microsoft.UI.Xaml.dll`，多半是 `resources.pri` 缺失 |
 | 右键**转圈** | `GetState` 是否调了 `GetDisplayName` 或读盘 | 菜单路径上做了 IO |
 | 改完 DLL 不生效 | dllhost 是否还持有旧 DLL | COM 代理缓存约 5 分钟 |
+| 仅大小写改名后，撤销报「所有项均已失效」 | 判断"源名是否被占用"用的是不是 `File.Exists` | CaseOnly 的 `from`/`to` 只差大小写，`File.Exists(from)` 恒为 true → 整批作废。必须用 `ExistsExact` |
+| 改名把同名文件**覆盖**了 | 预览阶段有没有做磁盘冲突检测 | 缺 §8.8 的磁盘检测。执行带 `FOF_NOCONFIRMATION`，覆盖时连提示都没有 |
+| 结果条一闪而过 | 底栏文案是否被预览统计覆盖 | `TextBox.TextChanged` 是异步派发的，清空输入框会触发预览刷新 |
 
 **日志位置有个坑**：dllhost 在包容器身份下运行，`%LOCALAPPDATA%\BatchRename\logs\` 会被文件虚拟化重定向，真实路径是：
 
@@ -181,10 +210,11 @@ C:\Users\<user>\AppData\Local\Packages\BatchRename.Shell_<hash>\LocalCache\Local
 
 | 里程碑 | 落点 | 需要新增 |
 |---|---|---|
-| M3 执行+撤销 | `Core/FileOperationRunner` | STA 线程 + CsWin32 `IFileOperation`；两步改名处理 CaseOnly；WAL 边执行边落盘 |
-| M3 撤销 | `Core/UndoJournal` | `%LOCALAPPDATA%` 下 journal 文件；启动时检测未完成批次 |
+| ~~M3 执行+撤销~~ ✅ | `Core/FileOperationRunner`、`Core/UndoJournal` | 已完成（含磁盘冲突检测、WAL、CaseOnly 两步改名） |
 | M4 单实例 | `App/ShellPayload` | 命名 Mutex + 命名管道转发；`SetForegroundWindow` 需先 `AllowSetForegroundWindow` |
 | M4 观感 | `MainWindow` | Mica（`SystemBackdrop`）+ 自定义标题栏（`ExtendsContentIntoTitleBar`） |
+| M4 键盘 | `MainWindow` | `Enter` 执行 / `Esc` 关闭 / 上下键移动 / `Space` 切勾选 |
 | M5 兜底 | `packaging/` | 传统 `ContextMenuHandlers` 注册作为 `Shift+右键` 入口 |
+| M3 遗留 | `RenameEngine` + `MainWindow` | 「自动编号」冲突策略、执行期逐项进度与取消按钮 |
 
-引擎侧无需改动即可支撑 M3——`RenameEngine.Run` 已经把 `CaseOnly`、`State`、`NewFullPath` 准备好，执行器只需消费。
+M3 期间引擎侧**并非**"只需消费"——实际追加了磁盘冲突检测（`MarkDiskConflicts` + `ExistsExact`）。教训是：能不能安全执行，取决于预览阶段拦不拦得住冲突；把冲突检测推给执行器就晚了，文件已经被覆盖。

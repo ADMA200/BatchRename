@@ -29,8 +29,29 @@ public static class RenameEngine
 
     private static readonly char[] InvalidChars = Path.GetInvalidFileNameChars();
 
-    public static RenameItem CreateItem(string fullPath, bool isDirectory, FileAttributes attributes)
+    /// <summary>
+    /// 精确（区分大小写）判断路径是否存在。
+    /// File.Exists 在 NTFS 上忽略大小写，无法验证「仅大小写改名」是否真的生效——
+    /// UPPER.TXT 明明没改，File.Exists("upper.txt") 也会返回 true。
+    /// </summary>
+    public static bool ExistsExact(string path)
     {
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
+
+            var name = Path.GetFileName(path);
+            return Directory.EnumerateFileSystemEntries(dir)
+                .Any(p => string.Equals(Path.GetFileName(p), name, StringComparison.Ordinal));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static RenameItem CreateItem(string fullPath, bool isDirectory, FileAttributes attributes)    {
         var trimmed = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var name = Path.GetFileName(trimmed);
         var dir = Path.GetDirectoryName(trimmed) ?? "";
@@ -87,6 +108,7 @@ public static class RenameEngine
         }
 
         MarkBatchConflicts(items);
+        MarkDiskConflicts(items);
 
         var blocking = anyTimeout || items.Any(i =>
             i.IsEnabled && (i.State == ItemState.Invalid ||
@@ -239,5 +261,44 @@ public static class RenameEngine
     {
         item.State = state;
         item.Message = message;
+    }
+
+    /// <summary>
+    /// 规格书 §8.8 的「磁盘已存在」检测。按目录分组、每目录枚举一次，
+    /// 比逐项 File.Exists 快得多，也避免了对大小写不敏感卷的误判。
+    /// </summary>
+    private static void MarkDiskConflicts(IReadOnlyList<RenameItem> items)
+    {
+        foreach (var group in items.GroupBy(i => i.Directory, StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrEmpty(group.Key)) continue;
+
+            HashSet<string> existing;
+            try
+            {
+                existing = new HashSet<string>(
+                    Directory.EnumerateFileSystemEntries(group.Key).Select(p => Path.GetFileName(p)),
+                    StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                continue;   // 目录不可读：跳过，不误判为冲突
+            }
+
+            // 本批里会被改走的名字，执行后这些名字就空出来了，不算冲突
+            var vacating = new HashSet<string>(
+                group.Where(i => i.State is ItemState.Ok or ItemState.Warning).Select(i => i.OriginalName),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in group)
+            {
+                if (item.State is not (ItemState.Ok or ItemState.Warning)) continue;
+                if (item.CaseOnly) continue;                        // 目标就是它自己
+                if (!existing.Contains(item.NewName)) continue;      // 目标不存在
+                if (vacating.Contains(item.NewName)) continue;       // 会被本批让出来
+
+                Set(item, ItemState.ConflictOnDisk, "目标已存在");
+            }
+        }
     }
 }

@@ -128,8 +128,31 @@
             </ListView>
         </Border>
 
-        <!-- 4. 底栏 -->
-        <TextBlock Grid.Row="4" x:Name="FooterText"
-                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        <!-- 4. 底栏：结果条 + 执行/撤销 -->
+        <Grid Grid.Row="4" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="FooterText"
+                       VerticalAlignment="Center"
+                       TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+            <ProgressRing x:Name="BusyRing" Grid.Column="1"
+                          Width="20" Height="20" IsActive="False" />
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="UndoButton" Content="撤销" Click="OnUndo" IsEnabled="False">
+                    <Button.KeyboardAccelerators>
+                        <KeyboardAccelerator Key="Z" Modifiers="Control" />
+                    </Button.KeyboardAccelerators>
+                </Button>
+                <Button x:Name="ExecuteButton" Content="执行" Click="OnExecute"
+                        IsEnabled="False" Style="{StaticResource AccentButtonStyle}" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

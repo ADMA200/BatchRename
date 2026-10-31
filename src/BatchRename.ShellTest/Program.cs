@@ -193,6 +193,197 @@ Console.WriteLine("\n== 9. 5000 项性能 (§8.11 预算) ==");
     True($"5000 项 {sw.ElapsedMilliseconds}ms < 1500ms", sw.ElapsedMilliseconds < 1500);
 }
 
+Console.WriteLine("\n== 10. 执行器 + 撤销 journal（真实文件，临时目录） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+    UndoJournal? journal = null;
+
+    try
+    {
+        for (var i = 0; i < 10; i++)
+            File.WriteAllText(Path.Combine(root, $"file{i}.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "CaseTest.txt"), "x");
+
+        var items = RenameEngine.CreateItems(Directory.GetFiles(root));
+        var rule = new RenameRule { Find = "file", Replace = "doc", Scope = RenameScope.Both };
+        var run = RenameEngine.Run(items, rule);
+        True("预览阶段无阻塞错误", !run.HasBlockingError);
+
+        // --- write-ahead：先落盘 Pending，再执行 ---
+        journal = UndoJournal.Create(UndoJournal.Summarize(rule),
+            items.Where(i => i.State is ItemState.Ok or ItemState.Warning)
+                 .Select(i => new JournalEntry
+                 {
+                     From = i.FullPath,
+                     To = i.NewFullPath,
+                     CaseOnly = i.CaseOnly,
+                     Ok = true
+                 }));
+        journal.Save();
+
+        True("journal 已落盘", File.Exists(journal.FilePath));
+        Eq("初始状态 Pending", JournalState.Pending, journal.State);
+        True("能被 LoadAll 读回", UndoJournal.LoadAll().Any(j => j.Id == journal.Id));
+
+        // --- 执行 ---
+        var runner = new FileOperationRunner();
+        var result = await runner.RunAsync(items);
+
+        Eq("10 项文件名全部改动", 10, result.Succeeded);
+        True("doc0.txt 存在", File.Exists(Path.Combine(root, "doc0.txt")));
+        True("doc9.txt 存在", File.Exists(Path.Combine(root, "doc9.txt")));
+        True("原 file0.txt 已不存在", !File.Exists(Path.Combine(root, "file0.txt")));
+
+        journal.State = JournalState.Applied;
+        journal.Save();
+        Eq("回写状态 Applied", JournalState.Applied, journal.State);
+
+        // --- 仅大小写变化走两步改名 ---
+        var caseItem = RenameEngine.CreateItem(Path.Combine(root, "CaseTest.txt"), false, FileAttributes.Normal);
+        RenameEngine.Run(new[] { caseItem },
+            new RenameRule { CaseMode = CaseMode.Upper, Scope = RenameScope.StemOnly });
+        True("引擎标记为 CaseOnly", caseItem.CaseOnly);
+
+        var caseResult = await new FileOperationRunner().RunAsync(new[] { caseItem });
+        True("仅大小写改名成功", caseResult.Succeeded == 1, $"失败 {caseResult.Failed} 项");
+        True("CASETEST.txt 存在", File.Exists(Path.Combine(root, "CASETEST.txt")));
+
+        // --- 撤销 ---
+        var outcome = await journal.UndoAsync();
+        Eq("撤销失败 0 项", 0, outcome.Failed);
+        True("撤销了 10 项", outcome.Undone == 10, $"实际 {outcome.Undone}");
+        True("file0.txt 已恢复", File.Exists(Path.Combine(root, "file0.txt")));
+        True("doc0.txt 已不存在", !File.Exists(Path.Combine(root, "doc0.txt")));
+        Eq("撤销后状态 Undone", JournalState.Undone, journal.State);
+
+        // --- 重复撤销被拒绝 ---
+        var again = await journal.UndoAsync();
+        True("二次撤销被拒绝", again.Rejected, again.RejectReason);
+    }
+    finally
+    {
+        try { if (journal is not null && File.Exists(journal.FilePath)) File.Delete(journal.FilePath); } catch { }
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 11. journal 失效判定（§8.10.3） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+    UndoJournal? journal = null;
+
+    try
+    {
+        var a = Path.Combine(root, "a.txt");
+        var b = Path.Combine(root, "b.txt");
+        File.WriteAllText(a, "x");
+        File.WriteAllText(b, "x");
+
+        var items = RenameEngine.CreateItems(new[] { a, b });
+        RenameEngine.Run(items, new RenameRule { Find = "txt", Replace = "md", Scope = RenameScope.ExtOnly });
+
+        journal = UndoJournal.Create("test", items.Select(i => new JournalEntry
+        {
+            From = i.FullPath, To = i.NewFullPath, CaseOnly = i.CaseOnly, Ok = true
+        }));
+        journal.Save();
+        journal.State = JournalState.Applied;
+        journal.Save();
+
+        await new FileOperationRunner().RunAsync(items);
+        True("a.md 存在", File.Exists(Path.Combine(root, "a.md")));
+
+        // 手动删掉一个目标文件，模拟"用户自己挪走了"
+        File.Delete(Path.Combine(root, "b.md"));
+
+        var outcome = await journal.UndoAsync();
+        Eq("失效 1 项", 1, outcome.Invalid);
+        Eq("回滚 1 项", 1, outcome.Undone);
+        True("a.txt 已恢复", File.Exists(Path.Combine(root, "a.txt")));
+    }
+    finally
+    {
+        try { if (journal is not null && File.Exists(journal.FilePath)) File.Delete(journal.FilePath); } catch { }
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 12. 磁盘冲突检测（§8.8） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "a.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "b.txt"), "x");
+
+        // a.txt → b.txt，而 b.txt 已存在于磁盘
+        var items = RenameEngine.CreateItems(new[] { Path.Combine(root, "a.txt") });
+        var outcome = RenameEngine.Run(items,
+            new RenameRule { Find = "a", Replace = "b", Scope = RenameScope.StemOnly });
+
+        Eq("目标已存在 → ConflictOnDisk", ItemState.ConflictOnDisk, items[0].State);
+        Eq("冲突文案", "目标已存在", items[0].Message);
+        True("阻塞执行", outcome.HasBlockingError);
+
+        // 仅大小写变化的目标就是自己，不能误判为磁盘冲突
+        var caseItem = RenameEngine.CreateItems(new[] { Path.Combine(root, "a.txt") });
+        RenameEngine.Run(caseItem,
+            new RenameRule { CaseMode = CaseMode.Upper, Scope = RenameScope.StemOnly });
+        True("CaseOnly 不误判为冲突", caseItem[0].State != ItemState.ConflictOnDisk, caseItem[0].State.ToString());
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 13. CaseOnly 端到端撤销 ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+    UndoJournal? journal = null;
+
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "Mixed.txt"), "x");
+
+        var items = RenameEngine.CreateItems(new[] { Path.Combine(root, "Mixed.txt") });
+        RenameEngine.Run(items, new RenameRule { CaseMode = CaseMode.Upper, Scope = RenameScope.StemOnly });
+
+        var upperPath = Path.Combine(root, "MIXED.txt");
+        True("引擎标记 CaseOnly", items[0].CaseOnly);
+        Eq("新名是全大写", "MIXED.txt", items[0].NewName);
+
+        journal = UndoJournal.Create("case-test", items.Select(i => new JournalEntry
+        {
+            From = i.FullPath, To = i.NewFullPath, CaseOnly = i.CaseOnly, Ok = true
+        }));
+        journal.Save();
+
+        var runResult = await new FileOperationRunner().RunAsync(items);
+        Eq("执行成功 1 项", 1, runResult.Succeeded);
+        True("磁盘上确实变成 MIXED.txt", RenameEngine.ExistsExact(upperPath));
+        True("原 Mixed.txt 已不存在", !RenameEngine.ExistsExact(Path.Combine(root, "Mixed.txt")));
+
+        journal.State = JournalState.Applied;
+        journal.Save();
+
+        var undo = await journal.UndoAsync();
+        True("撤销未被拒绝", !undo.Rejected, undo.RejectReason);
+        Eq("撤销 1 项", 1, undo.Undone);
+        True("Mixed.txt 已恢复", RenameEngine.ExistsExact(Path.Combine(root, "Mixed.txt")));
+    }
+    finally
+    {
+        try { if (journal is not null && File.Exists(journal.FilePath)) File.Delete(journal.FilePath); } catch { }
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine(new string('-', 56));
 Console.WriteLine($"检查 {checks} 项，失败 {failures} 项");

@@ -1,0 +1,4 @@
+IFileOperation
+IShellItem
+IFileOperationProgressSink
+SHCreateItemFromParsingName

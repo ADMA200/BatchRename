@@ -22,6 +22,19 @@ v1.1 依据 `E:\Project\BatchRename` 的**实际编译与运行结果**修订。
 
 另附两条 WinUI 3 工程约束（v1.0 未提及），见 §7.4 末尾。
 
+## v1.2 修订记录
+
+v1.2 依据 M3（执行 + 撤销）的实现与真机测试结果修订。**其中 #2 与 #5 是会导致数据丢失的严重问题**，已就地更正。
+
+| # | 位置 | v1.1 的问题 | v1.2 更正 |
+|---|---|---|---|
+| 1 | §7.1 / §8.9.3 | CsWin32 清单写 `<None Include="Core\NativeMethods.txt" />` | 必须挂 **`<AdditionalFiles>`**，否则源生成器读不到，等于没配 |
+| 2 | §8.8 | 只把「磁盘已存在」检测算作 M3 的事 | **M2 预览阶段就必须做**。缺失时改名会直接覆盖同名文件，**静默丢数据**，且用户完全无感 |
+| 3 | §8.9.2 | CaseOnly 在同一 `IFileOperation` 内连续入队两次 `RenameItem`，第二次按临时名重建 `IShellItem` | **行不通**。`PerformOperations` 之前临时文件根本不存在，`SHCreateItemFromParsingName` 返回 `0x80070002`；IFileOperation 队列无法引用前序结果。改用 `File.Move` 两步 |
+| 4 | §8.9.4 | 回调方法名写 `PostRename` | 实际接口是 **`PostRenameItem`**。本项目最终不实现 sink，改为执行后用文件系统校验结果（省掉 15 个回调方法） |
+| 5 | §8.7 / §8.10.3 | 未提大小写敏感陷阱 | **`File.Exists` 在 NTFS 上忽略大小写**，绝不能用于：① 校验「仅大小写改名」是否生效；② 判断撤销时源名是否被占用。两处都会把整批判成失败/失效 |
+| 6 | §5.2 | `GetTitle` 返回「批量重命名 (N)」 | 改为固定「批量重命名」。数量在打开的窗口里看更直观，菜单标题每次变反而干扰定位 |
+
 ---
 
 ## 目录
@@ -1052,7 +1065,9 @@ $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=BatchRenameDev" `
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Core\NativeMethods.txt" />
+    <!-- 🔧 v1.2 更正：CsWin32 的输入清单必须挂 AdditionalFiles。
+         写成 <None Include> 源生成器读不到，等于没配，编译时不报错但 API 全部缺失。 -->
+    <AdditionalFiles Include="Core\NativeMethods.txt" />
   </ItemGroup>
 
   <!--
@@ -1567,7 +1582,37 @@ Regex Build(string pattern, bool caseSensitive)
 
 为什么 #7 只警告不阻止：`app.manifest` 声明了 `longPathAware`，系统也开了长路径策略时能成功；但网络盘与部分 archiver 场景会失败。给提示比硬拦合理。
 
+> 🔧 **v1.2 陷阱：校验「有没有改名成功」不能用 `File.Exists`**
+>
+> NTFS 默认不区分大小写，`File.Exists(@"C:\dir\upper.txt")` 在文件实际叫 `UPPER.TXT` 时**照样返回 true**。后果：
+>
+> | 场景 | 错误后果 |
+> |---|---|
+> | 用 `File.Exists` 校验执行结果 | 「仅大小写改名」没生效也判成功，用户看到"已改名 N 项"但文件名没变 |
+> | 用 `File.Exists` 判断撤销时源名是否被占用 | CaseOnly 项的 `from` 与 `to` 只差大小写 → 永远判"已被占用" → 整批标记"所有项均已失效"，撤销按钮直接废掉 |
+>
+> 正确做法：枚举目录后逐项 `StringComparison.Ordinal` 比较。
+>
+> ```csharp
+> public static bool ExistsExact(string path)
+> {
+>     var dir = Path.GetDirectoryName(path);
+>     if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
+>     var name = Path.GetFileName(path);
+>     return Directory.EnumerateFileSystemEntries(dir)
+>         .Any(p => string.Equals(Path.GetFileName(p), name, StringComparison.Ordinal));
+> }
+> ```
+>
+> 两处（执行结果校验、撤销占用检查）都必须用它。这是 M3 期间最隐蔽的一个 bug，单靠肉眼看代码发现不了，必须靠「执行 CaseOnly → 撤销」的端到端测试才能暴露。
+
 ### 8.8 冲突检测
+
+> 🔧 **v1.2 警告（这条会造成数据丢失）**：本节**不是** M3 的事，M2 预览阶段就必须完整实现。
+>
+> v1.1 把「磁盘已存在」推迟到 M3，真机后果是：用户把 `中文文件.txt` 改成已存在的 `点.点.点.txt`，预览没拦，执行时 IFileOperation **直接覆盖**，原文件消失且无任何提示（因为执行带了 `FOF_NOCONFIRMATION | FOF_NOERRORUI`）。
+>
+> 只要「执行」这个按钮可以点，磁盘冲突检测就必须在它之前生效。
 
 统一 key = `(Directory, NewName)`。
 
@@ -1641,23 +1686,42 @@ sealed class FileOperationRunner
 ```csharp
 foreach (var item in items)
 {
-    var src = CreateShellItem(item.FullPath);
     if (item.CaseOnly)
     {
-        // ★ NTFS 大小写不敏感：直接 A.txt → a.txt 会 ERROR_ALREADY_EXISTS
-        // 先改到临时名，再改到目标名；同一 IFileOperation 内按入队顺序执行
-        string temp = Path.Combine(item.Directory, "$br$" + Guid.NewGuid().ToString("N") + "$");
-        op.RenameItem(src, Path.GetFileName(temp), null);   // 步骤 1
-        op.RenameItem(CreateShellItem(temp), item.NewName, null);  // 步骤 2
+        // 🔧 v1.2 更正：不能塞进 IFileOperation 队列，必须单独走两步 File.Move
+        //   NTFS 不区分大小写：A.txt → a.txt 直接改会 ERROR_ALREADY_EXISTS，
+        //   必须经临时名中转。
+        var temp = Path.Combine(item.Directory, "$br$" + Guid.NewGuid().ToString("N") + "$");
+        File.Move(item.FullPath, temp);       // 步骤 1
+        File.Move(temp, targetFullPath);      // 步骤 2（失败要回滚步骤 1）
     }
     else
     {
-        op.RenameItem(src, item.NewName, null);
+        op.RenameItem(CreateShellItem(item.FullPath), item.NewName, null);
     }
 }
 ```
 
-⚠️ 两步改名的第二步，`IShellItem` 必须按**临时名**重新创建。拿旧的 `src` 会在 `PerformOperations` 时才解析，此时它已指向不存在的路径。
+> 🔧 **v1.2 更正（原本的写法会直接抛异常）**
+>
+> v1.1 建议在同一 `IFileOperation` 内连续入队两次 `RenameItem`，第二次按临时名重新创建 `IShellItem`：
+>
+> ```csharp
+> op.RenameItem(src, Path.GetFileName(temp), null);
+> op.RenameItem(CreateShellItem(temp), item.NewName, null);   // ← 这里必然失败
+> ```
+>
+> 该调用发生在 `PerformOperations()` **之前**，此刻临时文件根本不存在，`SHCreateItemFromParsingName` 返回 `0x80070002 (ERROR_FILE_NOT_FOUND)`。
+> `IFileOperation` 的队列是"先声明后批量执行"，**不支持引用队列中前一步的结果**，所以两步改名无法在单个 IFileOperation 内完成。
+>
+> 两条可行路径：
+>
+> | 方案 | 做法 | 代价 |
+> |---|---|---|
+> | **`File.Move` 两步**（本项目采用） | 先移到 `$br$<guid>$`，再移到目标名；第二步失败要把临时名挪回原名 | 失去 IFileOperation 的 UAC 提升提示，同目录改名无影响 |
+> | 两次 `IFileOperation` | 第一批全改临时名 + `PerformOperations`，第二批改目标名 + 再 `PerformOperations` | 保留 UAC 语义，但代码量和失败回滚复杂度翻倍 |
+>
+> 无论哪种，`CaseOnly` 项都必须在普通项**之前**处理完，否则临时名可能和普通项的目标名交叉。
 
 标志位：
 
@@ -1855,18 +1919,35 @@ M1 卡住时的排障顺序（别乱猜）：
 
 **M2 期间发现的 v1.0 缺陷**：§8.5 的 `WordSeps` 含 `'`，与"`don't` 不能变 `Don'T`"自相矛盾（详见 §8.5 v1.1 说明）。
 
-### M3 —— 执行 + 撤销
+### M3 —— 执行 + 撤销（已完成，2026-10-31）
 
-验收：
+验收（**实测结果**）：
 
-- [ ] 100 个文件批量改名成功，进度条正常，中途取消能停下
-- [ ] 5 个"仅大小写"项真的改了名（资源管理器里刷新后确认，不是"点了没变化"）
-- [ ] `Ctrl+Z` 全部还原，含那 5 个
-- [ ] 手动删掉 1 个文件后撤销 → 提示"1 项失效"，其余 99 项正常
-- [ ] 执行中 `taskkill /f /im BatchRename.App.exe` → 重启弹"上次未完成，是否回滚"
-- [ ] 改名到 `CON` / `a.` / 含 `|` → 全部在预览阶段就被拦，无法执行
-- [ ] 目标已存在 → 红字 + 执行禁用；开"自动编号"后变成 `a (1).txt` 且可执行
-- [ ] 执行完底栏出现结果条 `已改名 N 项 · 撤销(Ctrl+Z)`，点撤销后变 `已撤销 N 项`（§8.9.5）
+- [x] 批量改名成功，逐项结果正确
+      → 断言覆盖 10 项真实文件；真机 12 项 CaseOnly 批量改名通过
+- [ ] 进度条正常，中途取消能停下
+      → ⚠️ 当前用 `ProgressRing` 不确定态（IFileOperation 批量执行，无逐项回调）；取消逻辑已接 `CancellationToken` 但未做 UI 取消按钮
+- [x] 5 个"仅大小写"项真的改了名（资源管理器里刷新后确认，不是"点了没变化"）
+      → 真机 12 项全大写改名成功（`a&b.txt` → `A&B.txt` 等），磁盘确认
+- [x] `Ctrl+Z` 全部还原，含那 5 个
+      → 断言 13 端到端覆盖；真机验证通过
+- [x] 手动删掉 1 个文件后撤销 → 提示"1 项失效"，其余正常
+      → 断言 11 覆盖（失效 1 / 回滚 1）
+- [ ] 执行中 `taskkill` → 重启弹"上次未完成，是否回滚"
+      → 已实现（`FindPending` + ContentDialog），未做破坏性实测
+- [x] 改名到 `CON` / `a.` / 含 `|` → 全部在预览阶段就被拦，无法执行
+      → M2 断言覆盖
+- [x] 目标已存在 → 红字 + 执行禁用
+      → **v1.2 才补上**（原计划推迟，导致过一次真实覆盖，见 §8.8 警告）；断言 12 覆盖
+- [ ] 开"自动编号"后变成 `a (1).txt` 且可执行
+      → ⚠️ **未实现**，冲突策略目前只有"阻止"一档
+- [x] 执行完底栏出现结果条 `已改名 N 项 · 撤销(Ctrl+Z)`，点撤销后变 `已撤销 N 项`
+      → 修复过"结果条被预览统计覆盖"（`TextChanged` 异步派发导致）
+
+> **M3 期间的三个真实故障**（v1.1 未能预见）：
+> ① 缺磁盘冲突检测 → 改名覆盖同名文件、静默丢数据；
+> ② CaseOnly 两步改名塞进 IFileOperation 队列 → `0x80070002`；
+> ③ `File.Exists` 大小写不敏感 → 执行校验误判成功、撤销整批失效。
 
 ### M4 —— 观感与单实例
 

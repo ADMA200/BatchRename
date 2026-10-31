@@ -10,11 +10,11 @@ Windows 11 资源管理器右键菜单里的批量重命名工具，对标 Power
 |---|---|---|
 | **M1** | 右键菜单出现 + 拉起窗口 + 路径透传 | ✅ 已通过验收 |
 | **M2** | 重命名引擎 + 实时预览（33 项自动断言） | 引擎 ✅ / UI ✅ |
-| **M3** | 执行 + 撤销（`IFileOperation` + journal） | ⬜ 未开始 |
+| **M3** | 执行 + 撤销（`IFileOperation` + WAL journal） | ✅ 已通过真机验证 |
 | **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ⬜ 未开始 |
 | **M5** | 安装闭环 + 传统 verb 兜底 | ⬜ 未开始 |
 
-当前基线标签：`v0.1-M1M2`
+当前基线标签：`v0.1-M1M2`（M3 完成后打 `v0.2-M3`）
 
 ## 环境要求
 
@@ -75,14 +75,17 @@ powershell -ExecutionPolicy Bypass -File .\tools\Install-Sparse.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\Uninstall.ps1
 ```
 
-### 4. 跑引擎断言
+### 4. 跑断言测试
 
 ```powershell
 dotnet build src\BatchRename.ShellTest\BatchRename.ShellTest.csproj -c Release
-dotnet src\BatchRename.ShellTest\bin\Release\net10.0\BatchRename.ShellTest.dll
+dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRename.ShellTest.dll
 ```
 
-覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 性能预算，共 33 项。退出码非 0 表示有断言失败。
+覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 性能预算 / **执行器 + 撤销 journal（真实文件）**，共 **67 项**。退出码非 0 表示有断言失败。
+
+> ⚠️ 测试 10–13 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**。
+> 但只要在 Windows 上跑这些测试，就别同时开着 `docs\samples` 做手工改名测试，避免互相干扰。
 
 ## 目录结构
 
@@ -90,13 +93,21 @@ dotnet src\BatchRename.ShellTest\bin\Release\net10.0\BatchRename.ShellTest.dll
 BatchRename\
 ├─ BatchRename.sln
 ├─ docs\
-│  ├─ SPEC.md                规格书（v1.1，契约与验收标准）
-│  ├─ ARCHITECTURE.md        架构说明（进程拓扑、模块、决策）
+│  ├─ SPEC.md                规格书（v1.2，契约与验收标准）
+│  ├─ ARCHITECTURE.md        架构说明（进程拓扑、模块、决策、排障）
 │  └─ samples\               验收用样本文件名（15 项边界情况）
 ├─ src\
 │  ├─ BatchRename.Shell\     C++ / WRL / x64，右键菜单 COM 组件
 │  ├─ BatchRename.App\       C# / WinUI 3，主程序
-│  └─ BatchRename.ShellTest\ 引擎断言测试（控制台）
+│  │  ├─ Core\               引擎与执行器（不依赖 WinUI）
+│  │  │  ├─ NameSplitter.cs          主名/扩展名切分
+│  │  │  ├─ RenameRule.cs            替换 + 大小写
+│  │  │  ├─ RenameEngine.cs          编排 + 九条校验 + 冲突检测
+│  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行
+│  │  │  ├─ UndoJournal.cs           WAL journal + 反向执行
+│  │  │  └─ NativeMethods.txt        CsWin32 输入清单
+│  │  └─ Models\RenameItem.cs
+│  └─ BatchRename.ShellTest\ 引擎+执行器断言测试（控制台，67 项）
 ├─ packaging\
 │  ├─ AppxManifest.xml       稀疏包清单（CLSID 与 Verb 注册）
 │  └─ Assets\                3 个 Logo
@@ -124,7 +135,15 @@ BatchRename\
 
 ## 已知限制
 
+- **「自动编号」冲突策略未实现**：目前只有「阻止」一档，目标已存在时执行按钮直接禁用
+- **执行期无逐项进度**：`IFileOperation` 批量执行拿不到细粒度回调，只用不确定态进度环；`CancellationToken` 已接入但 UI 上还没有取消按钮
+- **崩溃恢复对话框未做破坏性实测**（`taskkill` 打断执行）
 - 未做 `Shift+右键` 传统菜单兜底（M5）
 - 未做拖放启动、单实例（M4/M5）
-- 撤销 journal 跨重启校验尚未实现（M3）
 - 不支持递归子文件夹、云盘/回收站等虚拟项（设计上不做）
+
+## 历史坑（详见 SPEC v1.1 / v1.2 修订记录）
+
+- **`File.Exists` 在 NTFS 上忽略大小写**，不能用来校验「仅大小写改名」，也不能判断撤销时源名是否被占用
+- **CaseOnly 两步改名不能塞进单个 `IFileOperation` 队列**（前一步的结果尚不存在）
+- **磁盘冲突检测必须在预览阶段做**，否则执行会静默覆盖同名文件
