@@ -359,6 +359,8 @@ CI 的 `build-and-test` 会在跑测试前先执行它——文档和代码不�
 | `global.json` | 钉 SDK `10.0.100`，`rollForward: latestMinor`（本机与 CI 用的都是 10.0.4xx，允许同 major 内更高的功能带） | 写太死会让别人机器上 `dotnet build` 直接报「SDK 不匹配」 |
 | `.editorconfig` | 换行/缩进与 `.gitattributes` 对齐（统一 CRLF）；`*.ps1` 声明 `charset = utf-8-bom` | PowerShell 5.1 按 BOM 判编码，无 BOM 的中文脚本会被按 GBK 解码、吃掉后续代码行 |
 
+> ⚠ **同一条坑也适用于 workflow 里的 `run:` 块**：GitHub 把步骤正文写成**无 BOM** 的 .ps1，`shell: powershell` 下中文会被按 ANSI 解码成乱码并破坏引号配对，报出来的却是`Unexpected token` / `Missing closing '}'` 这类看似代码写错的信息。所以 `ci.yml` 里 `run: |` 的正文**一律写成纯 ASCII**（注释也用英文），中文只放在 `name:` 和仓库内脚本里。
+
 CI 在 `windows-latest` 上依次跑：`Verify-Docs.ps1` → `dotnet test` → 编 App → 编控制台壳 → **编原生 Shell（msbuild vcxproj）**。最后一步是 v1.13 补的：此前改 `dllmain.cpp` / `ExplorerCommand.cpp` 时前三步都绿，问题要等装到机器上才发现。
 
 > 两个脚本都依赖 `bin\publish` 已由 `dotnet publish` 生成。

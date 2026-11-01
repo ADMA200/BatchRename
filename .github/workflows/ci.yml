@@ -40,35 +40,46 @@ jobs:
       - name: Build (native shell extension)
         shell: powershell
         run: |
-          # windows-latest 上 msbuild 不一定在 PATH 里（VS2022 镜像只有在开发者命令行环境下才有），
-          # 所以用 vswhere 定位 VS 自带的 MSBuild.exe。失败时把关键行抛成 ::error:: 注解：
-          # 日志接口要鉴权，注解接口公开可读。
+          # IMPORTANT: keep this script ASCII-only.
+          # GitHub writes the step body to a .ps1 without a BOM, and Windows PowerShell 5.1
+          # decodes that as ANSI (GBK on CJK systems). Non-ASCII literals then turn into
+          # mojibake and break the parser before the first statement runs.
           $ErrorActionPreference = 'Stop'
           try {
             $proj = 'src\BatchRename.Shell\BatchRename.Shell.vcxproj'
             $common = @($proj, '/p:Configuration=Release', '/p:Platform=x64', '/m', '/v:m')
 
+            # msbuild is not necessarily on PATH on the runner; locate the one shipped with VS.
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            if (-not (Test-Path $vswhere)) { throw "找不到 vswhere: $vswhere" }
+            if (-not (Test-Path $vswhere)) { throw "vswhere not found: $vswhere" }
 
             $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if (-not $vsRoot) { throw "没有安装 C++ 生成工具（VC.Tools.x86.x64）" }
+            if (-not $vsRoot) { $vsRoot = & $vswhere -latest -products * -property installationPath }
+            if (-not $vsRoot) { throw 'No Visual Studio installation found' }
 
             $msb = Join-Path $vsRoot 'MSBuild\Current\Bin\MSBuild.exe'
-            if (-not (Test-Path $msb)) { throw "找不到 MSBuild: $msb" }
+            if (-not (Test-Path $msb)) { throw "MSBuild not found: $msb" }
 
             $toolset = (& $msb @common '-getProperty:PlatformToolset' 2>&1 | Select-Object -Last 1)
             Write-Host "msbuild=$msb"
             Write-Host "toolset=$toolset"
 
             $log = Join-Path $env:RUNNER_TEMP 'msbuild.log'
-            & $msb @common 2>&1 | Tee-Object -FilePath $log | Select-Object -Last 60
+            & $msb @common 2>&1 | Tee-Object -FilePath $log | Select-Object -Last 80
+
+            # Belt and braces: if the project still resolves a toolset this VS does not ship,
+            # retry once with the VS2022 toolset instead of failing the job.
+            if ($LASTEXITCODE -ne 0 -and (Select-String -Path $log -Pattern 'MSB8020' -Quiet)) {
+              Write-Host 'Retrying with /p:PlatformToolset=v143'
+              & $msb @common '/p:PlatformToolset=v143' 2>&1 | Tee-Object -FilePath $log -Append | Select-Object -Last 80
+            }
+
             if ($LASTEXITCODE -eq 0) { exit 0 }
 
-            Write-Host "::error::msbuild 失败（toolset=$toolset）"
+            Write-Host "::error::native shell build failed (toolset=$toolset)"
             Get-Content $log |
               Where-Object { $_ -match 'error|MSB\d{4}|LNK\d{4}|C\d{4}' } |
-              Select-Object -Unique -First 6 |
+              Select-Object -Unique -First 8 |
               ForEach-Object { Write-Host "::error::$_" }
             exit 1
           }
