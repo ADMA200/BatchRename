@@ -1,0 +1,16 @@
+﻿<Project>
+
+  <!-- 只作用于 C# 项目：vcxproj 也 import 本文件，这些属性对它无意义 -->
+  <PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- 版本单一真源：安装器从程序集读，不再各自硬编码 -->
+    <Version>1.0.0</Version>
+    <Product>批量重命名</Product>
+    <Authors>ADMA200</Authors>
+    <Copyright>MIT License</Copyright>
+  </PropertyGroup>
+
+</Project>

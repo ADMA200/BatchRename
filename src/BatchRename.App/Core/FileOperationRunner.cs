@@ -1,5 +1,4 @@
-using System.IO;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using BatchRename.App.Models;
 using Windows.Win32;
 using Windows.Win32.Foundation;

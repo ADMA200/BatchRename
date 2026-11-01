@@ -1,5 +1,4 @@
-using System.IO;
-using BatchRename.App.Models;
+﻿using BatchRename.App.Models;
 
 namespace BatchRename.App.Core;
 

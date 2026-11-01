@@ -20,6 +20,12 @@ internal static class Program
     private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\BatchRename";
     private const string DevModeKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock";
 
+    /// <summary>版本号的唯一来源是 Directory.Build.props 的 &lt;Version&gt;，这里只读不写死。</summary>
+    private static readonly string AppVersion =
+        (typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+         ?? typeof(Program).Assembly.GetName().Version?.ToString()
+         ?? "1.0.0").Split('+')[0];
+
     // 清单里 MinVersion 也是 22H2；这里同步拦一道，避免在更旧的系统上装出一个没有菜单的软件。
     private const int MinSupportedBuild = 22621;    // Windows 11 22H2
     private const int NewContextMenuBuild = 26300;  // Windows 11 26H2：扩展默认收进「应用扩展」子菜单
@@ -406,7 +412,7 @@ internal static class Program
 
             var uninstallCmd = Path.Combine(installRoot, "Uninstall.cmd");
             key.SetValue("DisplayName", AppName);
-            key.SetValue("DisplayVersion", "1.0.0");
+            key.SetValue("DisplayVersion", AppVersion);
             key.SetValue("Publisher", "Local");
             key.SetValue("InstallLocation", installRoot);
             key.SetValue("UninstallString", $"\"{uninstallCmd}\"");

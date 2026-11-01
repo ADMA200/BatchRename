@@ -1,0 +1,24 @@
+﻿root = true
+
+# 与 .gitattributes 保持一致：Windows 工程统一 CRLF
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{md,json,yml,yaml,xml,csproj,props,targets,xaml}]
+indent_size = 2
+
+[*.{ps1,psm1}]
+indent_size = 4
+# PowerShell 5.1 按 BOM 判定编码，带中文的脚本必须有 BOM
+charset = utf-8-bom
+
+[*.{cpp,h,rc}]
+indent_size = 4
+
+[*.{sln,vcxproj}]
+indent_size = 2

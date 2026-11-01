@@ -1,5 +1,4 @@
-using System.ComponentModel;
-using System.IO;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
 namespace BatchRename.App.Models;

@@ -349,6 +349,18 @@ SPEC §6.2/§6.4 内嵌了 `AppxManifest.xml` 与 `Install-Sparse.ps1` 的**逐�
 
 CI 的 `build-and-test` 会在跑测试前先执行它——文档和代码不一致时构建直接红。
 
+### 7.6 工程约定
+
+三个根目录配置文件，各自只解决一件事：
+
+| 文件 | 作用 | 注意 |
+|---|---|---|
+| `Directory.Build.props` | C# 公共编译选项（`Nullable` / `ImplicitUsings` / `LangVersion`）+ 版本号真源（`<Version>`）。安装器读程序集 `InformationalVersion` 写「应用和功能」条目 | `PropertyGroup` 带 `Condition="'$(MSBuildProjectExtension)' == '.csproj'"`——vcxproj 也 import 这个文件，不加条件会把 C# 属性塞进 C++ 工程 |
+| `global.json` | 钉 SDK `10.0.100`，`rollForward: latestMinor`（本机与 CI 用的都是 10.0.4xx，允许同 major 内更高的功能带） | 写太死会让别人机器上 `dotnet build` 直接报「SDK 不匹配」 |
+| `.editorconfig` | 换行/缩进与 `.gitattributes` 对齐（统一 CRLF）；`*.ps1` 声明 `charset = utf-8-bom` | PowerShell 5.1 按 BOM 判编码，无 BOM 的中文脚本会被按 GBK 解码、吃掉后续代码行 |
+
+CI 在 `windows-latest` 上依次跑：`Verify-Docs.ps1` → `dotnet test` → 编 App → 编控制台壳 → **编原生 Shell（msbuild vcxproj）**。最后一步是 v1.13 补的：此前改 `dllmain.cpp` / `ExplorerCommand.cpp` 时前三步都绿，问题要等装到机器上才发现。
+
 > 两个脚本都依赖 `bin\publish` 已由 `dotnet publish` 生成。
 > csproj 里有 `EnsurePayload` 目标：缺 `payload.zip` 时 publish 会**直接报错**，而不是静默产出一个没有 payload 的 exe（踩过——体积从 97MB 掉到 36MB，看起来像"优化成功"）。
 

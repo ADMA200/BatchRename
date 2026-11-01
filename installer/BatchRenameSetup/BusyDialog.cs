@@ -1,5 +1,4 @@
-using System.Runtime.InteropServices;
-using System.Threading;
+﻿using System.Runtime.InteropServices;
 
 namespace BatchRename.Setup;
 

@@ -580,8 +580,7 @@ public sealed partial class MainWindow : Window
     {
         if (_busy) return;
 
-        // 先吃掉还在防抖窗口里的最后一次输入：否则打完字 150ms 内点「执行」，
-        // 用的还是上一轮规则算出来的名字（REVIEW P2-9）
+        // 防抖窗口里可能还压着没生效的输入：先强制刷新一次，否则 150ms 内点执行会用上一轮规则算出的名字
         _debounce.Stop();
         RefreshPreview();
 
@@ -627,9 +626,7 @@ public sealed partial class MainWindow : Window
                 _execCts.Token,
                 ReportProgress);
 
-            // 规格书 §8.10.2：state=Applied 时必须带上逐项真实结果。
-            // 不回写的话，失败项在 journal 里仍标记为 Ok=true，
-            // 撤销会去回滚那些根本没改名的项，白算一次"已失效"。
+            // state=Applied 必须带逐项真实结果：失败项若仍记 Ok=true，撤销会去回滚根本没改名的项
             var byFrom = new Dictionary<string, RenameEntryResult>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in result.Entries) byFrom[r.From] = r;
             foreach (var entry in journal.Entries)
@@ -657,24 +654,16 @@ public sealed partial class MainWindow : Window
                 var first = result.Entries.FirstOrDefault(x => !x.Ok);
                 SetError($"部分失败：{first?.Error ?? "未知原因"}");
 
-                // 底栏只能放一条原因，多项失败时列全（M3 遗留 §8.9.5）。
-                // 注意不能在这里直接 await：SetBusy(false) 在 finally 里，会被对话框挡住，
-                // 表现为对话框弹出时底栏还在"正在改名 N / N"、取消按钮还亮着。
+                // 失败清单留到 finally 之后再弹：在这里 await 会被 SetBusy(false) 挡住，底栏还停在「正在改名」
                 failures = result.Entries.Where(x => !x.Ok).ToList();
             }
 
-            // 🔧 回归修复：执行后**不再清空**查找/替换框。
-            // v1.4 清空是为了"避免又显示成要再改一次"，但那建立在"改过的项被锁定"的前提上；
-            // P1-7 之后已改名项照常参与规则计算，清空只会把用户刚输入的内容丢掉——
-            // 失败项无法直接重试，想再套一轮规则也得从头敲。
-            // 规则留着时：已改名项若不再命中规则会回显「已改名」（RenameEngine.Run 末尾），
-            // 若仍然命中就如实显示"还会再改一次"，由用户自己决定要不要按执行。
+            // 不清理输入框：已改名项照常参与规则计算，清空只会让用户从零重敲，失败项也没法重试
 
             // 保留全部项：只把成功的项就地换成新路径并标记「已改名」，其余原样留着
             RemapItems(journal.Entries, markRenamed: true);
 
-            // 兜底：TextChanged 是异步派发的，_settingText 在事件到达前已复位，
-            // 会被当成"用户改了规则"而清掉结果文案。低优先级再写一次，确保结果条留住。
+            // TextChanged 异步派发，可能在 _settingText 复位后才到：低优先级再写一次，避免结果条被预览统计盖掉
             var msg = _resultMessage;
             if (msg is not null)
             {
@@ -687,9 +676,8 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // 🔧 P0-3：这里原来是裸 async void —— 任何异常都会冒到 DispatcherQueue，
-            // WinUI 3 会直接终止进程（没有对话框、没有日志），同时 journal 永远停在 Pending。
-            // 现在：按磁盘现状回写逐项 ok，保住"做过哪几步"的证据，并让窗口活下来。
+            // 必须兜住所有异常：裸 async void 里漏出去的异常会直接终止进程（无对话框、无日志），
+            // journal 也会永远停在 Pending。这里按磁盘现状回写逐项结果再保留 Pending 状态。
             AppLog.Error($"执行失败 ({journal.Entries.Count} 项, {journal.RuleSummary})", ex);
 
             try

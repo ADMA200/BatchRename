@@ -2253,6 +2253,22 @@ ie4uinit.exe -show
 > 按时间**倒序**排列，最新的在最前。编号在各版本内独立。
 > 正文里的 `🔧 vX.Y` 标注指向这里的对应条目。
 
+## v1.13 补充（2026-11-02：工程化收尾，准备开源）
+
+代码没有死代码（唯一的"只出现一次"都是 COM 接口实现、P/Invoke 结构体字段和入口点）。这轮清的是重复声明、版本双真源和公开前的痕迹。
+
+| # | 位置 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | 仓库根 | 4 个 csproj 各自写 `Nullable` / `ImplicitUsings` / `LangVersion`；版本号只存在于安装器硬编码里 | 新增 `Directory.Build.props`（仅对 `.csproj` 生效，`Condition` 保护 vcxproj）：公共编译选项 + `<Version>` / `<Product>` / `<Authors>`。安装器改读程序集 `InformationalVersion`，删掉 `"1.0.0"` 字面量 |
+| 2 | `BatchRename.App.csproj` | `TargetPlatformMinVersion=10.0.19041.0`，与清单 `22621` 再次不一致（v1.12 只改了清单） | 统一 `10.0.22621.0`；三行等于默认值的 `PublishSingleFile/PublishTrimmed/PublishAot=false` 删除 |
+| 3 | 9 个源文件 | `ImplicitUsings` 已开，仍显式 `using System;` / `using System.IO;` 等 | 删 11 处（`System.Text` 等非隐式集合内的保留） |
+| 4 | `StateToBrushConverter` | `KeyFor()` 与 `Fallback()` 两个 switch 都按 `ItemState` 分支，改状态要同步两处 | 合成一张 `Dictionary<ItemState,(string Key, Color Fallback)>`，71 → 62 行 |
+| 5 | `MainWindow.OnExecute` | 6 处注释是版本史叙述（`v1.4 清空是为了…`、`REVIEW P2-9`、`🔧 P0-3`） | 压成一行"为什么"，删掉版本号与追踪编号（历史留在本文修订记录里） |
+| 6 | `.github/workflows/ci.yml` | 只编 App / 测试 / 控制台壳，**原生 Shell（vcxproj）从未在 CI 编译** | 新增 `msbuild …BatchRename.Shell.vcxproj` 步骤；本机实测通过 |
+| 7 | `BatchRename.Shell.def` | `LIBRARY BatchRename.Shell` 与输出 `BatchRename.Shell.dll` 不同名 → 每次链接都报 LNK4070 | 改为 `LIBRARY BatchRename.Shell.dll`，警告消失 |
+| 8 | 仓库身份 | 26 个历史提交作者是 `ADMA2 <adma2@localhost>`（本机用户名 + 无意义邮箱） | `git filter-repo --mailmap` 全量改写为 `ADMA200 <ADMA200@users.noreply.github.com>`，时间戳保留 |
+| 9 | 仓库根 | 缺 SDK 钉版与编辑器约定 | 新增 `global.json`（`10.0.100` + `rollForward: latestMinor`）与 `.editorconfig`（CRLF/缩进；`*.ps1` 声明 `charset = utf-8-bom`，对应 PowerShell 5.1 按 BOM 判编码的坑） |
+
 ## v1.12 补充（2026-11-02：文档与代码对齐 + 校验脚本）
 
 起因是一次「文件里还有多余或过时的内容么」的排查：发现 §6.4 声称的脚本全文比真文件少 80 行，另有多处引用已删除的评审文档。本轮把口径一次性拉齐，并加了机器校验防止再漂。

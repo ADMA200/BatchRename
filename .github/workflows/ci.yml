@@ -33,3 +33,9 @@ jobs:
       # 控制台入口也编一遍：它链接 Core 源码，能提前抓到"Core 混进 WinUI 依赖"的回归
       - name: Build (console harness)
         run: dotnet build src/BatchRename.ShellTest/BatchRename.ShellTest.csproj -c Release
+
+      # 原生 Shell 扩展（C++/WRL）必须一起编：改 dllmain/ExplorerCommand 时
+      # 前面三步都不会红，问题要等装到机器上才发现
+      - name: Build (native shell extension)
+        shell: cmd
+        run: msbuild src\BatchRename.Shell\BatchRename.Shell.vcxproj /p:Configuration=Release /p:Platform=x64 /m /v:m

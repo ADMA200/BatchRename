@@ -1,4 +1,4 @@
-LIBRARY BatchRename.Shell
+LIBRARY BatchRename.Shell.dll
 EXPORTS
     DllGetClassObject       PRIVATE
     DllCanUnloadNow         PRIVATE
