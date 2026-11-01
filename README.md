@@ -127,11 +127,14 @@ zip 内的「安装说明.txt」有完整步骤，包含"菜单没出现怎么�
 .\tools\Build-Setup.ps1
 ```
 
-产出 `dist\BatchRename-Setup-<日期>.exe`（约 96MB，**自带 .NET 运行时**）。拷过去双击即可，不用解压、不用先装运行时。
+产出 `dist\BatchRename-Setup-<日期>.exe`（约 97MB，**自带 .NET 运行时**）。拷过去双击即可，不用解压、不用先装运行时。
 
-- 安装位置：`%LOCALAPPDATA%\BatchRename\app\<日期>\`
+- **安装路径可选**：启动后弹目录选择（默认 `%LOCALAPPDATA%\BatchRename\app`），也能直接输入或粘贴路径
 - 会写入「应用和功能」条目，卸载走那里即可
-- 静默安装：`BatchRenameSetup.exe /S`（退出码 0 = 成功，日志在 `%LOCALAPPDATA%\BatchRename\setup.log`）
+- 静默安装：`BatchRenameSetup.exe /S`，指定路径加 `--dir "D:\Tools\BatchRename"`（退出码 0 = 成功，日志在 `%LOCALAPPDATA%\BatchRename\setup.log`）
+
+> 目录选择用 `SHBrowseForFolder` P/Invoke 而不是 WinForms 的 `FolderBrowserDialog`：
+> 后者会把整套 Desktop 运行时拖进来，体积从 97MB 涨到 110MB。
 
 > 为什么不做 MSIX：真 MSIX 需要签名证书，自签证书在目标机必须被信任，否则报 `0x800B0109`。
 > 对"拷一台机器过去双击装好"的场景，那一步比现在更麻烦。
