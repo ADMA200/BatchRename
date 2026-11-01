@@ -100,6 +100,27 @@ dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRe
 > 测试执行器的 `AddUndoRecord` 一律为 `false`，所以不会往你资源管理器的 Ctrl+Z 里塞临时文件。
 > 但只要在 Windows 上跑这些测试，就别同时开着 `docs\samples` 做手工改名测试，避免互相干扰。
 
+## 装到其它设备
+
+```powershell
+.\tools\Package-Portable.ps1
+```
+
+产出 `dist\BatchRename-<日期>.zip`（约 60MB）。拷到目标机解压，**双击「安装.cmd」**即可，不用开 PowerShell 改执行策略。
+
+目标机需要：
+
+| 条件 | 说明 |
+|---|---|
+| Windows 11 26H2（Build 26300+） | 稀疏包清单的 `MaxVersionTested` 按此填 |
+| **开发者模式** | 必须开启，否则报 `0x80073CFF` |
+| **.NET 10 Desktop Runtime（x64）** | 当前是框架依赖发布。想免掉这一条用 `-SelfContained`（约 +70MB） |
+| 无需管理员 | 包注册在任何 IL 都可以 |
+
+> ⚠ **安装后不要移动或重命名目录**。稀疏包注册的是绝对路径（`-ExternalLocation`），移动后菜单失效，得重新跑「安装.cmd」。
+
+zip 内的「安装说明.txt」有完整步骤，包含"菜单没出现怎么办"。
+
 ## 目录结构
 
 ```
