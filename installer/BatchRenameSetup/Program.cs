@@ -29,12 +29,51 @@ internal static class Program
     private const uint MB_ICONQUESTION = 0x20;
     private const uint MB_ICONINFORMATION = 0x40;
 
+    // ---- SHBrowseForFolder（不引 WinForms 的目录选择器）----
+    private const uint COINIT_APARTMENTTHREADED = 0x2;
+    private const uint BIF_RETURNONLYFSDIRS = 0x0001;
+    private const uint BIF_EDITBOX = 0x0010;
+    private const uint BIF_NEWDIALOGSTYLE = 0x0040;
+    private const uint BFFM_INITIALIZED = 1;
+    private const uint BFFM_SETSELECTIONW = 0x0467;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct BROWSEINFOW
+    {
+        public IntPtr hwndOwner;
+        public IntPtr pidlRoot;
+        public IntPtr pszDisplayName;      // 预分配的 260 wchar 缓冲
+        public string lpszTitle;
+        public uint ulFlags;
+        [MarshalAs(UnmanagedType.FunctionPtr)]
+        public BrowseCallbackProc lpfn;
+        public IntPtr lParam;              // 传给回调的初值（初始路径）
+        public int iImage;
+    }
+
+    private delegate int BrowseCallbackProc(IntPtr hwnd, uint uMsg, IntPtr lParam, IntPtr lpData);
+
+    [DllImport("ole32.dll")]
+    private static extern int CoInitializeEx(IntPtr pvReserved, uint dwCoInit);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SHBrowseForFolderW(ref BROWSEINFOW lpbi);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool SHGetPathFromIDListW(IntPtr pidl, StringBuilder pszPath);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, string lParam);
+
+    [DllImport("ole32.dll")]
+    private static extern void CoTaskMemFree(IntPtr pv);
+
     [STAThread]
     private static int Main(string[] args)
     {
         // 文件夹选择对话框需要视觉样式，否则是老式外观
-        System.Windows.Forms.Application.EnableVisualStyles();
-        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
+        // SHBrowseForFolder 的 BIF_NEWDIALOGSTYLE 需要 STA 单元（COM）
+        CoInitializeEx(IntPtr.Zero, COINIT_APARTMENTTHREADED);
 
         // 静默模式：不弹任何对话框，日志写 %LOCALAPPDATA%\BatchRename\setup.log，用退出码表达成败。
         // 用于自动化验证与批处理部署。路径可用 --dir 指定。
@@ -165,29 +204,64 @@ internal static class Program
         return null;
     }
 
+    /// <summary>
+    /// 用 SHBrowseForFolder 选目录，不引 WinForms（省约 14MB）。
+    ///
+    /// BIF_NEWDIALOGSTYLE 让它变成可调整大小的对话框（并带「新建文件夹」按钮），
+    /// 观感仍比 Win10+ 的 FolderBrowserDialog 旧一档。
+    /// BIF_EDITBOX 允许直接粘贴路径 —— 对"输到某个盘符目录"更顺手。
+    /// </summary>
     private static string? PickFolder(string initial)
     {
+        var displayName = Marshal.AllocHGlobal(260 * sizeof(char));
+        var initialPtr = IntPtr.Zero;
+        var pidl = IntPtr.Zero;
+
         try
         {
-            using var dlg = new System.Windows.Forms.FolderBrowserDialog
+            initialPtr = string.IsNullOrWhiteSpace(initial)
+                ? IntPtr.Zero
+                : Marshal.StringToHGlobalUni(initial);
+
+            var bi = new BROWSEINFOW
             {
-                Description = "选择安装位置（安装后请不要移动该目录）",
-                UseDescriptionForTitle = true,
-                ShowNewFolderButton = true
+                hwndOwner = IntPtr.Zero,
+                pidlRoot = IntPtr.Zero,
+                pszDisplayName = displayName,
+                lpszTitle = "选择安装位置（安装后请不要移动该目录）",
+                ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX,
+                lpfn = BrowseCallback,
+                lParam = initialPtr
             };
 
-            // InitialDirectory 为空时交给系统默认
-            var start = Directory.Exists(initial)
-                ? initial
-                : Path.GetDirectoryName(initial) is { } parent && Directory.Exists(parent) ? parent : null;
-            if (start is not null) dlg.InitialDirectory = start;
+            pidl = SHBrowseForFolderW(ref bi);
+            if (pidl == IntPtr.Zero) return null;   // 用户取消
 
-            return dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK ? dlg.SelectedPath : null;
+            var sb = new StringBuilder(260);
+            return SHGetPathFromIDListW(pidl, sb) ? sb.ToString() : null;
         }
         catch
         {
             return null;
         }
+        finally
+        {
+            if (pidl != IntPtr.Zero) CoTaskMemFree(pidl);
+            if (initialPtr != IntPtr.Zero) Marshal.FreeHGlobal(initialPtr);
+            Marshal.FreeHGlobal(displayName);
+        }
+    }
+
+    private static int BrowseCallback(IntPtr hwnd, uint msg, IntPtr lParam, IntPtr lpData)
+    {
+        // 对话框初始化后把初始路径设为选中项
+        if (msg == BFFM_INITIALIZED && lpData != IntPtr.Zero)
+        {
+            var path = Marshal.PtrToStringUni(lpData);
+            if (!string.IsNullOrEmpty(path))
+                SendMessageW(hwnd, BFFM_SETSELECTIONW, (IntPtr)1, path);
+        }
+        return 0;
     }
 
     private static bool DevModeEnabled()

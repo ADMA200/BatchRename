@@ -3,8 +3,6 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <!-- 只为 FolderBrowserDialog 引 WinForms；不用 WPF，骨架仍是最轻的那套 -->
-    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -29,5 +27,16 @@
       <LogicalName>payload.zip</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <!--
+    payload 缺失时明确报错，而不是让 Include 的 Exists 条件静默跳过。
+    踩过的坑：忘了生成 payload，exe 从 97MB 掉到 36MB，看起来像"体积优化成功"，
+    实际装上去会发现没有任何文件。
+    只在发布时检查，日常 build 不受影响。
+  -->
+  <Target Name="EnsurePayload" BeforeTargets="PrepareForPublish">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\payload.zip')"
+           Text="缺少 payload.zip。请先运行 tools\Build-Setup.ps1（它会自动生成并复制过来）。" />
+  </Target>
 
 </Project>
