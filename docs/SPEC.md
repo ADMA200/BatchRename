@@ -47,7 +47,7 @@ v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是�
 | 4 | §7.4 | 规则栏横排在顶部 | 改为 PowerRename 式：左 300px 操作区（纵向）+ 右预览卡片；撤销/执行贴左栏底部，结果条固定在卡片内底部 |
 | 5 | §5.2 | `GetIcon` 返回 `exe路径,0` | 改返回独立的 **`Assets\menu.ico`**。exe 图标受 Shell 图标缓存影响，替换后菜单可能长期显示旧图，且无法把菜单图标与应用图标分开设计 |
 | 6 | §7.6 | Mutex 名 `Local\BatchRename.SingleInstance.{PackageFamilyName}` | 应用由 Shell `CreateProcess` 启动，`Package.Current` 不可用，改固定名 |
-| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB |
+| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（见 REVIEW §11 对标实测） |
 | 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。需提供 `altform-unplated` 变体 |
 
 ## v1.4 补充（M3 遗留项回补）
@@ -58,7 +58,7 @@ v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是�
 | 2 | §8.8 | 「自动编号」只在规格书里，未实现 | 已实现：`n=0` 先试原名（批内互撞时第一项应保留原名），之后 `stem (n).ext`，上限 999 |
 | 3 | §7.4 | 底栏缺「全选/全不选」 | 已补为 `CheckBox`，位于撤销/执行左侧；`Ctrl+A` 保留 |
 
-> 断言测试同步扩到 **79 项**（新增自动编号 9 项、Pending journal 3 项）。
+> 断言测试同步扩到 **79 项**（新增自动编号 9 项、Pending journal 3 项）。<br>（后续批次继续演进：92 → 102 → 115 → 118 → **124 项**，见文末 v1.5/v1.6 修订表）
 
 ## v1.5 修订记录（2026-11-01：系统级撤销、journal 降级、CaseOnly 两步作废）
 
@@ -88,8 +88,18 @@ v1.5 依据真实 `IFileOperation` 探针 + 资源管理器实发 `Ctrl+Z` 的�
 | 20 | §7.5 | `Ctrl+A` / `Space` 改完勾选后「全选」复选框状态不同步；`Esc` 直接关窗，未执行的规则白敲 | 复选框改三态并与列表同步（`SyncSelectAllBox`）；有未执行改动时 `Esc` 弹二次确认 |
 | 21 | §7.4 | 状态色硬编码、浅色主题下绿/黄对比度不足；`AppWindow.Resize` 用物理像素，150% 缩放下窗口只有 787×480 DIP | 颜色优先取 `SystemFillColor*Brush` 主题资源（取不到才退回固定色）；窗口尺寸按 `GetDpiForWindow` 换算 |
 | 22 | §5.5 / §6.7 | 单实例管道 `while(true)` 无退避（持续失败会吃满一个核）；`active.pid` 永不清理（`Dispose` 无人调用）；csproj 里留着「临时」的 `EmitCompilerGeneratedFiles` | 失败按 250ms×(次数) 退避并写 `app.log`（上限 4s）；`Window.Closed` → `Dispose` 清 pid + 释放 mutex；删掉临时开关（需要时命令行加 `-p:EmitCompilerGeneratedFiles=true`） |
+| 23 | §8.9.5 / §8.11 | 执行期只有不确定态进度环、没有取消按钮；`CancellationToken` 接受但没人用 | **逐项进度 + 取消落地**：sink 的 `PostRenameItem` 按 ~100 次/批 上报 `(完成, 总数)`，UI 切线程画确定态进度条并显示「正在改名 34 / 96 …」；「取消」置位令牌 → `PreRenameItem` 抛 → Shell 停后续。**坑**：此时 `PerformOperations()` 不返回错误码，而是把失败 HRESULT 变成 `OperationCanceledException` 抛出，必须就地捕获，否则会被当成"执行中断" |
+| 24 | §7.4 / §7.8.7 | 行内勾选用 `CheckBox`；5000 项实测 180MB | **换成 Border + FontIcon 指示灯 + 整行命中**（`BoolToVisibilityConverter`）。实测分解：空窗 110.4MB；显示 10 项 133MB；显示 200/1000/5000 项 179.6/177/180MB —— 即"每项一个容器"并不成立（项数翻 25 倍内存不变），真正贵的是**每个已实现行的 `CheckBox`**。换掉后 5000 项 **137MB**（−43MB）。<br>**两个坑**：① `ListViewItem` 会吃掉子元素的 `Tapped`，只能走 `ListView.ItemClick`；② `ItemClick` 不给点击位置，用 `PointerPressed`（`handledEventsToo: true`）记下 x，落在左侧 56px 勾选列内才切换，其余位置保持"选中"。<br>**推论**：`x:Bind` / `UserControl` / `ItemsRepeater` 都压不动这笔开销，因为它们优化的是逐项容器与绑定，而瓶颈是行内模板化控件 |
+| 25 | §7.4 | 行模板允许"4 个叶子控件"的表述已被实测推翻 | 规则改为：**行内只允许叶子元素（`TextBlock`/`FontIcon`/`Border`），禁止任何模板化控件**（`CheckBox`/`ToggleButton`/`Button`）。需要交互时走 `ItemClick` + `PointerPressed` 记 x 判列（见 #24），不要直接给叶子元素挂 `Tapped` |
+| 26 | §7.4 | 用户要求"不用官方组件，但形态和官方完全一致" | 用两个 `Border`（未勾选/已勾选各一层，`Visibility` 二选一）+ `FontIcon` 复刻官方 CheckBox。**像素级对齐**（同窗口对照官方「全选」实测，1.25 缩放）：20×20 DIP 方框、`ControlCornerRadius` 圆角；勾选态 `AccentFillColorDefaultBrush` 填充（两侧实测同为 `(228,164,124)`）、`E73E` 勾字形 12px + `TextOnAccentFillColorPrimaryBrush`；**未勾选态必须 `Transparent` 填充**（官方内部像素与背后面板只差 3；铺 `ControlFillColorDefaultBrush` 会明显发白）；描边 `ControlStrongStrokeColorDefaultBrush`。代价 **139MB**（简单版 137MB、官方 `CheckBox` 180MB）。<br>**坑**：`CheckBoxFillUnchecked`/`CheckBoxStrokeChecked`/`CheckBoxForegroundChecked` 这些键是 **UWP 命名，WinUI 3 里不存在**，`ThemeResource` 解析期直接抛 `Cannot find a Resource`，进程起来就崩（见 `app.log`）。<br>**仅剩差异**：官方有 PointerOver/Pressed 颜色过渡动画，这里没有——要那层动画就必须换回模板化控件（内存回到 180MB 量级） |
+| 27 | §7.4 状态列 | 代码里"优先取系统主题资源、取不到退回写死 RGB"，实际**一直走写死**：`Application.Current.Resources` 不含系统主题字典（查不到）；缓存按 `Application.RequestedTheme` 判深浅且切主题不清缓存 | 改成**颜色由 XAML 声明、代码只取对象**：`RootGrid.Resources` 里声明 5 个 `SolidColorBrush`，`Color="{ThemeResource SystemFillColorCritical/Caution/Success/TextFillColorSecondary}"`；`Renamed` 用资源别名 `<StaticResource x:Key="RowStateAccent" ResourceKey="AccentTextFillColorPrimaryBrush" />`（`AccentTextFillColorPrimary` 这个 **Color** 键在 WinUI 3 里不存在）。转换器只按 key 从窗口资源取，**不缓存**（缓存会把旧 brush 钉死，切主题不生效）。实测五支：`#C5FFFFFF / #FF6CCB5F / #FFFCE100 / #FFFF99A4 / #FFF3C59B` |
+| 28 | §7.4 全选 | `IsThreeState="True"` + `Checked/Unchecked/Indeterminate` 回调：点击循环是 false→true→null→false，从"全勾"点一下会落到 `null`，而处理器对 `null` 直接 return → 框停在中间态、列表毫无变化（假死） | 改 `Click="OnSelectAllClick"`：中间态**只用于显示**（部分勾选），点击意图一律从列表真实状态推断（不是全勾→全勾；已全勾→全不勾），处理完立刻 `SyncSelectAllBox()` 纠正显示。实测两次点击：全勾 ↔ 全不勾，中间态不再被用户点出来 |
+| 29 | §7.4 表头 | 列头放在 `ListView.Header` 里，跟着列表一起滚走，5000 项时对不上位 | 移出列表改成固定行（`Border` + 三列，列宽与行模板一致 `40/*/28/*/110`），底部加 1px `CardStrokeColorDefaultBrush` 分隔线；列表移到第 2 行、结果条第 3 行 |
+| 30 | §8.9.5 失败清单 | 底栏只能显示首条失败原因，其余项只在状态列有红字 | 执行完（`finally` 里 `SetBusy(false)` 之后）弹 `ContentDialog`：逐项列「原名 → 新名 + 原因」，最多 200 行，超出提示用「复制清单」（`DataPackage` + `Clipboard`）带走全部。**坑**：不能在 `try` 里 `await` 对话框——`SetBusy(false)` 在 `finally`，会被对话框挡住，表现为弹窗时底栏还写着「正在改名 N / N」且取消按钮还亮着 |
+| 31 | §4.3 分层 | `RenameEngine` 465 行：名字计算（`BuildNewName`）、合法性（`Validate`）与冲突判定（批内互撞/循环/磁盘/自动编号）混在一起 | 抽出 `Core/ConflictResolver.cs`（227 行，`internal static`）：只关心"名字之间/名字与磁盘"的冲突，契约是**只读入参列表、就地写回 State/Message/NewName**，不碰规则、不写磁盘；`RenameEngine` 降到 262 行。调用顺序在 `Run()` 里显式保留：互撞 → 循环 → 磁盘 → 编号。**坑**：搬过去的方法默认还是 `private`，要在 `ConflictResolver` 里改成 `internal`，否则 `Run()` 直接编译不过 |
+| 32 | §9 测试 | 124 条断言只有 console 入口，没有 `dotnet test`、没有 CI | 断言体抽成 `tests/BatchRename.Core.Tests/CoreSuite.cs`（**唯一实现**，`CoreSuite.RunAsync(report)` 返回 `(Checks, Failures)`）：console 入口 `BatchRename.ShellTest` 只负责逐条打印，xUnit 入口 `CoreSuiteTests` 断言`Failures == 0` 且 `Checks == 124`（条数守卫，防止悄悄少跑）。加 `.github/workflows/ci.yml`（windows-latest：test + App build + console build）。**坑**：① xUnit 项目必须和 ShellTest 一样带 `Microsoft.Windows.CsWin32` + 同一份 `NativeMethods.txt`，否则 Core 里的 `IShellItem`/`PCWSTR`/`HRESULT` 全找不到；② 断言里有 `await`，`Run` 必须是 `async Task<Result>`；③ `Console.WriteLine()` 被批量改成 `Note()` 后要给它默认参数；④ CI **不要** `dotnet build BatchRename.sln`——C++ 的 `BatchRename.Shell.vcxproj` 需要 MSBuild.exe/VS 工具链，dotnet CLI 会报 `VCTargetsPath` 缺失 |
 
-> 断言测试同步扩到 **118 项**（新增：15 组 Pending 回滚 10 项、16 组目录/文件大小写改名 6 项、14 组扩展名+编号 2 项、17 组中断回写 4 项、18 组二次改名 4 项、19 组链式顺序 4 项、20 组循环检测 5 项、21 组逐项失败 4 项、22 组两层防抖 3 项）。
+> 断言测试同步扩到 **124 项**（新增：15 组 Pending 回滚 10 项、16 组目录/文件大小写改名 6 项、14 组扩展名+编号 2 项、17 组中断回写 4 项、18 组二次改名 4 项、19 组链式顺序 4 项、20 组循环检测 5 项、21 组逐项失败 4 项、22 组两层防抖 3 项、23 组进度 3 项、24 组取消 3 项）。
 
 ---
 
@@ -1250,9 +1260,10 @@ public static void ForwardToExistingInstance(IReadOnlyList<string> paths)
 
 `ListView` 的性能红线：
 
-- 行模板只用 `TextBlock`/`CheckBox`，不用 `Grid` 套 `Grid` 套 `Border`；
+- 行模板只用**叶子元素**（`TextBlock`/`FontIcon`/`Border`），**禁止**任何模板化控件（`CheckBox`/`Button`/`ToggleSwitch`）——实测 5000 项时一个行内 `CheckBox` 独占 46–49MB（§7.8.7）；
 - **绝不能**把 `ListView` 塞进 `ScrollViewer`（会立刻关掉虚拟化，5000 项直接卡死）；
-- 不给每行绑 `ToolTip`（会创建 5000 个 flyout）；
+- **行内要能点，就走 `ListView.ItemClick` + `PointerPressed` 记 x**：`ListViewItem` 会吃掉子元素的 `Tapped`/`PointerPressed`（必须 `handledEventsToo: true` 注册），`ItemClick` 又不给坐标；两者配合才能做"只有勾选列可切换，其它位置只选中"；
+- **不给每行绑 `ToolTip`**（会创建 5000 个 flyout）；
 - **不做逐行文件图标**：每项要走一次 `SHGetFileInfo`（1–3ms），5000 项多 5–15 秒，还要多占几十 MB 图标缓存。行内只用文字状态（§7.8.3）。
 
 ### 7.4.1 两条 WinUI 3 工程约束（🔧 v1.1 新增）
@@ -1429,7 +1440,7 @@ Log.Info($"[load] parse-done={t1.ElapsedMilliseconds}ms first-render={t2.Elapsed
 | 指标 | 实测（2026-11-01） | 上限 | 超了通常意味着 |
 |---|---|---|---|
 | 空窗口私有工作集 | **110MB** | 120MB | 加载了多余 XAML 资源、或行模板里塞了重型容器 |
-| 5000 项时 | **204MB** | 220MB | 行模板太重 / 绑了 ToolTip / 加了图标 / 重建了 `ObservableCollection` |
+| 5000 项时 | **139MB**（v1.5 前 180MB；同状态 PowerRename 123MB，差在 C# 基座） | 150MB | 行模板里出现**模板化控件**（`CheckBox` 曾独占 46–49MB）、绑了 ToolTip、或重建了 `ObservableCollection` |
 | 5000 项窗口出现耗时 | **174ms** | 1.5s | 没有分批 `TryEnqueue`，或一次 `Add` 一条 |
 | 同时存在的 `BatchRename.App.exe` | 1 个（已验证） | 1 个 | 单实例失效（§7.6） |
 | 关窗后残留进程 | 0 | 0 | 有后台线程未退出（多为 STA 线程未释放） |
@@ -1841,7 +1852,7 @@ internal sealed class RenameProgressSink : IFileOperationProgressSink
 
 `DescribeHr` 负责把 HRESULT 翻成人话。注意改名失败时 Shell 常返回**复制引擎**错误（`0x8027xxxx`，如 `0x80270027` = 源文件被占用），而不是普通 `0x8007xxxx`，两族都要映射。
 
-UI 每 100 条 `TryEnqueue` 刷一次进度，不要逐条（进度条仍未接线，见 §9 遗留）。
+UI 每 100 条 `TryEnqueue` 刷一次进度，不要逐条。**v1.5 起这条已接线**：sink 的 `(done,total)` 回调 → `MainWindow.ReportProgress` → `DispatcherQueue.TryEnqueue` → `BusyBar`（确定态）+"正在改名 n / N"+"取消"按钮（取消走 `PreRenameItem` 抛）。
 
 #### 8.9.5 执行后
 
@@ -1925,7 +1936,7 @@ UI 每 100 条 `TryEnqueue` 刷一次进度，不要逐条（进度条仍未接�
 | 引擎计算 | 5000 项 ≤ 120ms | `Task.Run` + `CancellationTokenSource`，新输入到来立即取消旧任务；>2000 项才 `Parallel.For` |
 | UI 回写 | 不重建集合 | 逐项只对 `NewName`/`State` 变化项触发 `PropertyChanged`；**不要** `new ObservableCollection` |
 | 磁盘存在性检查 | 用户停手 400ms 后 | 第二档防抖，按目录批量枚举（§8.8）。🔧 v1.5 已实现：150ms 纯内存层 + 400ms 磁盘层 |
-| 执行期进度 | 每 100 项一次 | sink 里计数，到 100 才 Post 到 UI |
+| 执行期进度 | 每 100 项一次 | sink 里计数，到 100 才 Post 到 UI。🔧 v1.5 已实现（`PostRenameItem` 上报，UI 切线程画进度条 + 取消按钮） |
 | 列表渲染 | 5000 行滚动 60fps | `ListView` 默认 `ItemsStackPanel` 虚拟化；行模板只放 4 个叶子控件；不塞 `ScrollViewer`；不绑 `ToolTip`；不逐行取图标（§7.4） |
 
 ---
@@ -2003,8 +2014,10 @@ M1 卡住时的排障顺序（别乱猜）：
 
 - [x] 批量改名成功，逐项结果正确
       → 断言覆盖 10 项真实文件；真机 12 项 CaseOnly 批量改名通过
-- [ ] 进度条正常，中途取消能停下
-      → ⚠️ 当前用 `ProgressRing` 不确定态（IFileOperation 批量执行，无逐项回调）；取消逻辑已接 `CancellationToken` 但未做 UI 取消按钮
+- [x] 进度条正常，中途取消能停下
+      → v1.5 已接线：`IFileOperationProgressSink::PostRenameItem` 提供逐项回调，进度条确定态 + 「取消」按钮。
+        断言 23 组（300 项，最后一次回调 `300/300`）、24 组（取消后 Shell 停止后续、已完成项保留）。
+        旧描述"`ProgressRing` 不确定态 / 无逐项回调 / 无取消按钮"已作废（那时 sink 还没实现）
 - [x] 5 个"仅大小写"项真的改了名（资源管理器里刷新后确认，不是"点了没变化"）
       → 真机 12 项全大写改名成功（`a&b.txt` → `A&B.txt` 等），磁盘确认
 - [x] `Ctrl+Z` 全部还原，含那 5 个
@@ -2044,8 +2057,9 @@ M1 卡住时的排障顺序（别乱猜）：
 - [x] 5000 文件右键到可交互 < 1.5s
       → **实测窗口出现 174ms**（模拟 Shell 管道传入 5000 条路径）
 - [x] 实测资源占用
-      → 空窗口 **110MB**、5000 项 **204MB**、进程数 1、关窗无残留。
-        红线已按实测调整为 120 / 220MB（§7.8.7 v1.3）
+      → 空窗口 **109MB**、5000 项 **139MB**（v1.3 时为 204MB，v1.5 换掉行内 `CheckBox` 后降到 180MB，
+        v1.6 按官方模板复刻勾选框后为 139MB）、进程数 1、关窗无残留。
+        红线最终为 **120 / 150MB**（§7.8.7）；同状态 PowerRename 为 123MB，差距在 C# 基座（REVIEW §11）
 
 > **M4 期间的两个认知修正**：
 > ① Mica 不是"整窗糊一层半透明"——内容区要不要叠填充层取决于要不要分层，叠了反而出现色块分界；

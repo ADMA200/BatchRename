@@ -13,6 +13,23 @@
     <Grid x:Name="RootGrid">
         <Grid.Resources>
             <local:StateToBrushConverter x:Key="StateBrush" />
+            <local:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+
+            <!--
+                状态列颜色：**交给 XAML 解析 ThemeResource**，代码只取现成的画刷对象。
+                为什么不用代码去查主题字典：WinUI 3 的 XamlControlsResources.ThemeDictionaries
+                是按启动时的主题固化的——实测在深色下取 "Light" 字典，拿到的仍是深色值
+                （TextFillColorSecondary 两个键都是 #C5FFFFFF）。而 ThemeResource 在这里会随
+                系统深浅色/高对比度实时换值，且换的是同一个 SolidColorBrush 实例的 Color，
+                所以列表里已绑定的行会自动更新，不需要重挂 ItemsSource。
+            -->
+            <SolidColorBrush x:Key="RowStateCritical"  Color="{ThemeResource SystemFillColorCritical}" />
+            <SolidColorBrush x:Key="RowStateCaution"   Color="{ThemeResource SystemFillColorCaution}" />
+            <SolidColorBrush x:Key="RowStateSuccess"   Color="{ThemeResource SystemFillColorSuccess}" />
+            <!-- AccentTextFillColorPrimary 这个 Color 键在 WinUI 3 里不存在（只有 …Brush 版本），
+                 所以用资源别名指向那支 brush，主题解析仍然由 XAML 负责 -->
+            <StaticResource x:Key="RowStateAccent" ResourceKey="AccentTextFillColorPrimaryBrush" />
+            <SolidColorBrush x:Key="RowStateSecondary" Color="{ThemeResource TextFillColorSecondary}" />
         </Grid.Resources>
 
         <Grid.RowDefinitions>
@@ -92,8 +109,7 @@
                             Spacing="8" Margin="0,10,0,0">
                     <CheckBox x:Name="SelectAllBox" Content="全选"
                               MinWidth="0" IsChecked="True" IsThreeState="True"
-                              Checked="OnSelectAllChanged" Unchecked="OnSelectAllChanged"
-                              Indeterminate="OnSelectAllChanged" />
+                              Click="OnSelectAllClick" />
                     <Button x:Name="UndoButton" Content="撤销" Click="OnUndo" IsEnabled="False">
                         <Button.KeyboardAccelerators>
                             <KeyboardAccelerator Key="Z" Modifiers="Control" />
@@ -125,29 +141,39 @@
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
                     <Grid>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <ListView Grid.Row="0" x:Name="ItemList" SelectionMode="Single">
-                            <ListView.Header>
-                                <Grid Padding="12,8" ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="40" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="28" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="110" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="1" Text="原名称"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock Grid.Column="3" Text="新名称"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock Grid.Column="4" Text="状态"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                </Grid>
-                            </ListView.Header>
+                        <!--
+                            表头吸顶（M3 遗留）：原来放在 ListView.Header 里，会跟着列表一起滚走。
+                            现在移出列表当成固定行；列宽与行模板一致（40/*/28/*/110），
+                            左边距也对齐（12 = 列表项内容的默认内缩）。
+                        -->
+                        <Border Grid.Row="0" Padding="12,8"
+                                BorderThickness="0,0,0,1"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="40" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="28" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="110" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="1" Text="原名称"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="3" Text="新名称"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Column="4" Text="状态"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Grid>
+                        </Border>
 
+                        <ListView Grid.Row="1" x:Name="ItemList" SelectionMode="Single"
+                                  IsItemClickEnabled="True"
+                                  ItemClick="OnItemRowClick">
                             <ListView.ItemTemplate>
                                 <!--
                                     用 {Binding} 而不是 {x:Bind}：Window 不是 FrameworkElement，
@@ -163,9 +189,36 @@
                                             <ColumnDefinition Width="110" />
                                         </Grid.ColumnDefinitions>
 
-                                        <CheckBox Grid.Column="0" MinWidth="0"
-                                                  Click="OnItemEnabledChanged"
-                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
+                                        <!--
+                                            行内勾选不用 CheckBox：它是模板化控件，每个已实现行都要摊模板与动画资源，
+                                            实测 5000 项时独占 46–49MB（179.8MB → 137MB）。
+                                            但形态按官方模板 1:1 复刻：20×20、ControlCornerRadius 圆角、官方令牌画刷
+                                            （未勾选 Transparent 填充 + ControlStrongStrokeColorDefault 描边——实测官方未勾选态
+                                              内部像素与背后面板只差 3，是透明；铺 ControlFillColorDefault 会明显发白；
+                                             已勾选 AccentFillColorDefault + TextOnAccentFillColorPrimary）、
+                                            E73E 勾字形、12px。
+                                            差异只有一处：官方有 PointerOver/Pressed 过渡动画，这里没有（那需要模板化控件）。
+                                            ⚠ 不能用 CheckBoxFillUnchecked/CheckBoxStrokeChecked 这类键——那是 UWP 命名，
+                                            WinUI 3 里不存在，用了会在 XAML 解析期抛 "Cannot find a Resource"。
+                                        -->
+                                        <Grid Grid.Column="0" Background="Transparent">
+                                            <Grid Width="20" Height="20"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <Border Width="20" Height="20" CornerRadius="{ThemeResource ControlCornerRadius}"
+                                                                                                        BorderThickness="1"
+                                                                                                        Background="Transparent"
+                                                        BorderBrush="{ThemeResource ControlStrongStrokeColorDefaultBrush}"
+                                                        Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                                                <Border Width="20" Height="20" CornerRadius="{ThemeResource ControlCornerRadius}"
+                                                                                                        BorderThickness="1"
+                                                                                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                                                        Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVisibility}}">
+                                                    <FontIcon Glyph="&#xE73E;" FontSize="12"
+                                                              Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                                </Border>
+                                            </Grid>
+                                        </Grid>
 
                                         <TextBlock Grid.Column="1"
                                                    Text="{Binding OriginalName}"
@@ -192,12 +245,19 @@
                         </ListView>
 
                         <!-- 结果条：卡片内底部，右对齐 -->
-                        <Grid Grid.Row="1" Padding="12,4,12,8">
+                        <Grid Grid.Row="2" Padding="12,4,12,8">
                             <StackPanel Orientation="Horizontal"
                                         HorizontalAlignment="Right"
                                         VerticalAlignment="Center"
                                         Spacing="8">
                                 <ProgressRing x:Name="BusyRing" Width="16" Height="16" IsActive="False" />
+
+                                <!-- 执行期：【取消】与确定态进度条。逐项进度来自 sink 的 PostRenameItem -->
+                                <ProgressBar x:Name="BusyBar" Width="120" Height="4" Minimum="0" Maximum="1"
+                                             Value="0" Visibility="Collapsed" VerticalAlignment="Center" />
+                                <Button x:Name="CancelButton" Content="取消" Visibility="Collapsed"
+                                        Click="OnCancelExecute" />
+
                                 <TextBlock x:Name="FooterText"
                                            FontSize="12"
                                            MaxLines="1"

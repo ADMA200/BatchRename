@@ -61,13 +61,14 @@ public sealed class FileOperationRunner
     public Task<RenameBatchResult> RunAsync(
         IReadOnlyList<RenameItem> items,
         RenameRunOptions options = default,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<int, int>? onProgress = null)
     {
         var tcs = new TaskCompletionSource<RenameBatchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var thread = new Thread(() =>
         {
-            try { tcs.TrySetResult(RunCore(items, options, ct)); }
+            try { tcs.TrySetResult(RunCore(items, options, ct, onProgress)); }
             catch (Exception ex) { tcs.TrySetException(ex); }
         })
         {
@@ -81,7 +82,8 @@ public sealed class FileOperationRunner
     }
 
     private static unsafe RenameBatchResult RunCore(
-        IReadOnlyList<RenameItem> items, RenameRunOptions options, CancellationToken ct)
+        IReadOnlyList<RenameItem> items, RenameRunOptions options, CancellationToken ct,
+        Action<int, int>? onProgress)
     {
         CoInitializeEx(IntPtr.Zero, COINIT_APARTMENTTHREADED);
 
@@ -104,7 +106,7 @@ public sealed class FileOperationRunner
             if (planned.Count > 0 && !ct.IsCancellationRequested)
             {
                 var ordered = OrderByDependency(planned);
-                var sink = new RenameProgressSink(ct);
+                var sink = new RenameProgressSink(ct, planned.Count, onProgress);
 
                 IFileOperation? op = null;
                 try
@@ -137,7 +139,16 @@ public sealed class FileOperationRunner
                         }
                     }
 
-                    op.PerformOperations();
+                    try
+                    {
+                        op.PerformOperations();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // sink 在 PreRenameItem 里抛异常 → CLR 把失败 HRESULT 带回 PerformOperations。
+                        // 这是"按用户要求提前停下"，不是失败：已完成项的结果仍在 sink 里。
+                    }
+
                     op.GetAnyOperationsAborted(out var abortedRaw);   // CsWin32 的 out 重载只吃 BOOL
                     aborted = abortedRaw;
                     cancelled = sink.CancelRequested;

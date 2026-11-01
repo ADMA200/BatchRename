@@ -11,10 +11,10 @@ Windows 11 资源管理器右键菜单里的批量重命名工具，对标 Power
 | 里程碑 | 范围 | 状态 |
 |---|---|---|
 | **M1** | 右键菜单出现 + 拉起窗口 + 路径透传 | ✅ 已通过验收 |
-| **M2** | 重命名引擎 + 实时预览（118 项自动断言） | 引擎 ✅ / UI ✅ |
+| **M2** | 重命名引擎 + 实时预览（124 项自动断言） | 引擎 ✅ / UI ✅ |
 | **M3** | 执行 + 撤销（`IFileOperation` + 单文件事务日志 + Shell 撤销栈） | ✅ 已通过真机验证 |
 | **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ✅ 已通过真机验证 |
-| **M5** | 安装闭环 + 传统 verb 兜底 | ⬜ 未开始 |
+| **M5** | 安装闭环 + 传统 verb 兜底 | 🟡 部分：稀疏包已注册（`Get-AppxPackage BatchRename.Shell` → `1.0.0.0 / Ok`，位置 `packaging\`），传统 verb 兜底与「干净机器从零安装」的完整验收未做 |
 
 当前基线标签：`v0.3-M4`
 
@@ -79,12 +79,18 @@ powershell -ExecutionPolicy Bypass -File .\tools\Uninstall.ps1
 
 ### 4. 跑断言测试
 
+两个入口跑的是**同一份断言实现**（`tests\BatchRename.Core.Tests\CoreSuite.cs`），不会各写一遍漂移：
+
 ```powershell
+# xUnit（CI 用，一条测试覆盖全部断言，同时守卫断言条数 == 124）
+dotnet test tests\BatchRename.Core.Tests\BatchRename.Core.Tests.csproj -c Release
+
+# 控制台（人肉看逐条输出）
 dotnet build src\BatchRename.ShellTest\BatchRename.ShellTest.csproj -c Release
 dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRename.ShellTest.dll
 ```
 
-覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 回滚 / **文件与目录的仅大小写改名** / 执行中断后的磁盘回写 / 二次改名 / 链式排序 / 循环检测 / 逐项失败 / 两层防抖，共 **118 项**。退出码非 0 表示有断言失败。
+覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 回滚 / **文件与目录的仅大小写改名** / 执行中断后的磁盘回写 / 二次改名 / 链式排序 / 循环检测 / 逐项失败 / 两层防抖 / 执行期进度与取消，共 **124 项**。退出码非 0 表示有断言失败。
 
 > ⚠️ 测试 10–16 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**；journal 也会被指到 `%TEMP%\BatchRenameTestJournal\`，不会覆盖你的 `last-batch.json`。
 > 测试执行器的 `AddUndoRecord` 一律为 `false`，所以不会往你资源管理器的 Ctrl+Z 里塞临时文件。
@@ -108,13 +114,18 @@ BatchRename\
 │  │  │  ├─ RenameRule.cs            替换 + 大小写
 │  │  │  ├─ RenameEngine.cs          编排 + 九条校验 + 冲突检测
 │  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行（含 Shell 撤销栈登记）
+│  │  │  ├─ ConflictResolver.cs      批内互撞/循环/磁盘冲突/自动编号（从 RenameEngine 抽出）
 │  │  │  ├─ UndoJournal.cs           单文件事务日志（write-ahead）+ 反向执行
 │  │  │  └─ NativeMethods.txt        CsWin32 输入清单
 │  │  ├─ Services\
 │  │  │  ├─ SingleInstanceGate.cs    命名 Mutex + 命名管道激活
 │  │  │  └─ AppLog.cs                App 侧日志（异常兜底，1MB 循环）
 │  │  └─ Models\RenameItem.cs
-│  └─ BatchRename.ShellTest\ 引擎+执行器断言测试（控制台，118 项）
+│  └─ BatchRename.ShellTest\ 断言测试的**控制台入口**（薄壳，逐条打印）
+├─ tests\BatchRename.Core.Tests\
+│  ├─ CoreSuite.cs          124 条断言的唯一实现（console 与 xUnit 共用）
+│  └─ CoreSuiteTests.cs     xUnit 入口 + 断言条数守卫
+├─ .github\workflows\ci.yml  test + App build + console build（windows-latest）
 ├─ packaging\
 │  ├─ AppxManifest.xml       稀疏包清单（CLSID 与 Verb 注册）
 │  └─ Assets\                3 个 Logo
@@ -143,10 +154,9 @@ BatchRename\
 
 ## 已知限制
 
-- **执行期无逐项进度**：`IFileOperation` 批量执行拿不到细粒度回调，只有不确定态进度环；`RunAsync` 已接受 `CancellationToken` 但 UI 尚未接取消按钮
-- **部分失败只显示首条原因**：未做 §8.9.5 的失败清单对话框
+- **失败清单最多列 200 条**：超出部分提示用「复制清单」带走（避免一次塞几千个 TextBlock）；底栏仍只显示首条原因
 - **软件内撤销只覆盖最近一批**：`last-batch.json` 每次执行覆盖写，没有历史批次列表（7 天 / 20 批的历史已按 v1.5 砍掉）；更早的批次只能靠资源管理器的 Ctrl+Z（受 Shell 撤销栈生命周期限制）
-- **执行中断会留下半完成状态**：`OnExecute` 已加 try/catch + `JournalError`，异常时按磁盘现状回写逐项 ok 并写 `app.log`；但"执行期逐项进度/取消"仍未做，中断只会在下次启动时提示回滚
+- **执行中断会留下半完成状态**：`OnExecute` 已加 try/catch + `JournalError`，异常时按磁盘现状回写逐项 ok 并写 `app.log`；中断只会在下次启动时提示回滚
 - 未做 `Shift+右键` 传统菜单兜底（M5）
 - 未做拖放启动（M5）
 - 图标为临时方案（应用 Aa / 菜单铅笔），任务栏 plating 未彻底解决
@@ -163,3 +173,8 @@ BatchRename\
 - **"源名会让出"的冲突豁免会把环放过去**：`a→b` + `b→a` 两项互相把对方当空位。v1.5 起由 `MarkBatchCycles` 在预览阶段拦掉（整环标「批内循环改名」）
 - **链式改名 `a→b` + `b→c` 的入队顺序决定会不会丢数据**：错序时 `a→b` 会先覆盖 `b` 的原内容。v1.5 起执行器按依赖排序入队
 - **`IFileOperation` 改名失败的 HRESULT 常来自复制引擎**（`0x8027xxxx`，如 `0x80270027` = 源文件被占用），不是 `0x8007xxxx`；只映射 Win32 那族会把错误显示成原始码
+- **`ListView` 行模板里放一个 `CheckBox`，5000 项就多占 46–49MB**：模板化控件（含内置状态动画）会按已实现行摊资源，换成 `Border` + `FontIcon` 后 180MB → 137MB，再按官方模板复刻成双层 Border 为 139MB。行内只允许叶子元素
+- **WinUI 3 的 `XamlControlsResources.ThemeDictionaries` 按启动时主题固化**：代码里取 `"Light"` 字典拿到的可能仍是深色值（实测 `TextFillColorSecondary` 两套都是 `#C5FFFFFF`），所以**不要用代码查主题色**——把 `{ThemeResource}` 写在 XAML 里、转换器只取现成的 brush 对象；切主题时 XAML 改的是同一个 brush 实例的 `Color`，已绑定的行自动刷新（缓存反而会把它钉死）
+- **`IsThreeState="True"` 的点击循环会经过 `null`**：三态只该用来"显示"部分选中；在 `Checked/Indeterminate` 回调里对 `null` 直接 return，会让全选框停在中间态且列表毫无变化。用 `Click` + 从列表真实状态推断意图，处理完立刻回写显示
+- **WinUI 3 没有 `CheckBoxFillUnchecked` 这批键**：那是 UWP 命名，`ThemeResource` 解析期直接抛 `Cannot find a Resource`，进程起不来。行内自绘勾选框要用通用令牌：勾选态 `AccentFillColorDefaultBrush` + `TextOnAccentFillColorPrimaryBrush`，未勾选态 **`Transparent`** 填充 + `ControlStrongStrokeColorDefaultBrush` 描边
+- **`ListViewItem` 会吃掉子元素的 `Tapped`/`PointerPressed`**：行内交互只能走 `ListView.ItemClick`（`IsItemClickEnabled="True"`），要判"点的是哪一列"得另外用 `AddHandler(PointerPressedEvent, …, handledEventsToo: true)` 记下 x

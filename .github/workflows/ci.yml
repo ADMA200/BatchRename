@@ -1,0 +1,30 @@
+name: build-and-test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    # WinUI 3 / CsWin32 都需要 Windows；ubuntu-latest 上 Core 里的 P/Invoke 编译不过
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 引擎断言（124 条，xUnit）：这是唯一的硬门槛
+      - name: Test (Core assertions)
+        run: dotnet test tests/BatchRename.Core.Tests/BatchRename.Core.Tests.csproj -c Release
+
+      # App 是 WinUI 3，需要 Windows App SDK；只验证能编过，不跑 UI
+      - name: Build (WinUI app)
+        run: dotnet build src/BatchRename.App/BatchRename.App.csproj -c Release
+
+      # 控制台入口也编一遍：它链接 Core 源码，能提前抓到"Core 混进 WinUI 依赖"的回归
+      - name: Build (console harness)
+        run: dotnet build src/BatchRename.ShellTest/BatchRename.ShellTest.csproj -c Release

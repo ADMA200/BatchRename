@@ -60,7 +60,7 @@
 
 App 启动
   └─ ShellPayload.ReadFromStdIn()   ← 先读，再建窗口，避免闪空窗
-  └─ MainWindow → RenameEngine.Run()
+  └─ MainWindow → RenameEngine.Run() → ConflictResolver（互撞/循环/磁盘/编号）
 ```
 
 弹框必须开在临时线程上：`MessageBox` 阻塞 dllhost 的 STA 线程后，下一次右键的 `GetState` 会排队，现象是"菜单转圈"。
@@ -90,13 +90,14 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
 
 **硬规则：`Core/` 与 `Models/` 不引用任何 WinUI 类型。**
 
-这不是洁癖，是为了让 `BatchRename.ShellTest`（控制台）能**直接链接源码编译**，把引擎逻辑跑成断言，完全不启动 UI。当前 118 项断言就是这么跑起来的——改规则逻辑不需要开窗口、不需要注册右键菜单。
+这不是洁癖，是为了让 `BatchRename.ShellTest`（控制台）能**直接链接源码编译**，把引擎逻辑跑成断言，完全不启动 UI。当前 124 项断言就是这么跑起来的——改规则逻辑不需要开窗口、不需要注册右键菜单。
 
 | 模块 | 职责 | 关键实现约束 |
 |---|---|---|
 | `Core/NameSplitter` | 主名/扩展名切分 | 只切最后一层；目录永不切；`i==0` 视为 dotfile |
 | `Core/RenameRule` | 文本/正则替换 + 四种大小写 | 大小写一律 `Invariant`；正则优先 `NonBacktracking`，回退带 250ms 超时 |
-| `Core/RenameEngine` | 编排 + 九条校验 + 冲突检测 | 替换**先**、大小写**后**；作用域「两者」绝不拼串；磁盘冲突必须在这里拦 |
+| `Core/RenameEngine` | 编排 + 九条校验 + 名字计算 | 替换**先**、大小写**后**；作用域「两者」绝不拼串；**冲突判定已移到 `ConflictResolver`**（v1.6） |
+| `Core/ConflictResolver` | 批内互撞 / 批内循环 / 磁盘已存在 / 冲突自动编号 | 只读写 `State`/`Message`/`NewName`，不碰规则、不写磁盘；顺序固定：互撞 → 循环 → 磁盘 → 编号 |
 | `Core/FileOperationRunner` | STA + IFileOperation 执行 | 所有项统一进一个队列（**无 CaseOnly 两步**）；入队前按依赖排序；正向加 `FOFX_ADDUNDORECORD`、反向不加；`SetOwnerWindow`；逐项结果来自 `RenameProgressSink`，**不再事后扫目录** |
 | `Core/RenameProgressSink` | `IFileOperationProgressSink` 的托管实现 | 实现 CsWin32 的 `[ComImport]` 接口（CLR 自动建 CCW）；`PostRenameItem` 只记录不抛，取消只在 `PreRenameItem` 抛 |
 | `Core/UndoJournal` | 单文件事务日志 + 失效判定 + 反向执行 | 只有 `last-batch.json`（覆盖写）；先落盘再动手，`Flush(true)` 强制刷盘；`RollbackPendingAsync` 专管崩溃恢复 |
@@ -121,6 +122,7 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
   │    │                    FOFX_SHOWELEVATIONPROMPT | FOFX_ADDUNDORECORD)
   │    │    SetOwnerWindow(hwnd) → RenameItem × N → PerformOperations
   │    └─ 逐项结果取自 sink 的 PostRenameItem（HRESULT）；CaseOnly 额外用 ExistsExact 复核
+  │       sink 同时按 ~100 次/批 上报进度 → UI 画进度条；「取消」→ PreRenameItem 抛 → Shell 停后续
   └─ 回写 state=Applied → Save()（覆盖 last-batch.json）
 
 点击「撤销」/ Ctrl+Z（软件内）
@@ -190,6 +192,12 @@ v1.2 的理由（"`IFileOperation` 直接改会被判目标已存在，必须两
 
 **为什么拦"循环改名"而不是用两阶段临时名？**
 `a→b` + `b→a` 这一类环无法靠排序解决，工程上有两条路：整批先改临时名再改目标名（两阶段），或预览阶段直接拦掉。选后者：① 环在真实使用里几乎不存在（一条全局规则造不出互换）；② 两阶段会让"一批"变成两次 `PerformOperations`、两条撤销记录、失败回滚还要回滚两步；③ 拦掉是**可解释**的——用户看到红字知道为什么，而不是文件名的中间态在闪。链（`a→b` + `b→c`）不是环，由执行器的依赖排序保证安全。
+
+**为什么行内勾选不用 `CheckBox`？**
+5000 项实测把结论钉死了：空窗 110MB；只显示 10 项 133MB；显示 200 / 1000 / 5000 项分别是 179.6 / 177 / 180MB。**项数翻 25 倍内存几乎不变**，说明不存在"每项一个容器"的成本（虚拟化本身是好的）；把行内 `CheckBox` 换成 `Border` + `FontIcon` 后直接降到 **137MB**（再按官方模板像素级复刻成双层 Border + 勾字形，视觉 1:1，代价 139MB）。所以那 43MB 不是"行太多"，而是每个已实现行的模板化控件在摊模板、状态动画与合成资源。行模板的规则因此收紧成：只允许叶子元素。
+状态列颜色同理不能自己"取"：WinUI 3 的主题字典按启动主题固化，代码侧查 `Light` 拿到的是深色值。最终方案是**颜色在 XAML 里用 `{ThemeResource}` 声明成画刷**（`Renamed` 用 `StaticResource` 别名指向 `AccentTextFillColorPrimaryBrush`，因为对应的 Color 键不存在），转换器只负责按状态挑对象、不做缓存——主题切换时 XAML 换的是同一实例的 `Color`，已绑定行自动更新。
+
+交互方面踩了两个坑：`ListViewItem` 会吃掉子元素的 `Tapped`；`ItemClick` 又不给点击坐标。最终做法是 `ItemClick` 负责命中、`PointerPressed`（`handledEventsToo`）记下 x，只有落在左侧 56px 勾选列才切换，点其它位置保持原来的"选中"。
 
 **为什么 journal 只留一批、不再有 7 天 / 20 条历史？**
 撤销的"刚刚那一下"由 Shell 撤销栈兜住（`FOFX_ADDUNDORECORD`，与进程死活无关）；journal 剩下的不可替代职能只有两个——write-ahead 崩溃标记、软件内撤销最近一批。7 天 / 20 批既没有 UI 入口，也没有需求，实测 20 个文件 85KB 里有 10 个 `Applied` 记录永远撤不到。降级后 `UndoJournal` 只剩一个覆盖写的 `last-batch.json`，状态机从三个分支收敛到两个。详见 [REVIEW-2026-11-01.md](REVIEW-2026-11-01.md) §7.6。
@@ -274,7 +282,8 @@ App 进程**没有**容器身份，日志就在 `%LOCALAPPDATA%\BatchRename\logs
 | M4 观感 | `MainWindow` | Mica（`SystemBackdrop`）+ 自定义标题栏（`ExtendsContentIntoTitleBar`） |
 | M4 键盘 | `MainWindow` | `Enter` 执行 / `Esc` 关闭 / 上下键移动 / `Space` 切勾选 |
 | M5 兜底 | `packaging/` | 传统 `ContextMenuHandlers` 注册作为 `Shift+右键` 入口 |
-| **待修（REVIEW P3）** | `Core` / `MainWindow` | 内存优化（`UserControl` + `x:Bind`，现 5000 项 204MB）、抽 `ConflictResolver`、xUnit 迁移、右键第二个 verb「撤销上次重命名」、执行期逐项进度与取消按钮 |
-| M3 遗留 | `RenameEngine` + `MainWindow` | 执行期逐项进度与取消按钮、失败清单对话框 |
+| **明确不做** | — | 右键菜单第二个 verb「撤销上次重命名」（用户判定没有必要：软件内撤销 + 资源管理器 Ctrl+Z 已覆盖） |
+| **下一轮** | `Core` | 失败项重试（需先定 journal 语义：重试批次会覆盖上一批撤销记录） |
+| M3 遗留 | — | 已清空：逐项进度/取消（v1.5）、失败清单对话框、表头吸顶（v1.6）都已落地 |
 
 M3 期间引擎侧**并非**"只需消费"——实际追加了磁盘冲突检测（`MarkDiskConflicts` + `ExistsExact`）。教训是：能不能安全执行，取决于预览阶段拦不拦得住冲突；把冲突检测推给执行器就晚了，文件已经被覆盖。

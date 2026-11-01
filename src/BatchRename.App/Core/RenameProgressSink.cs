@@ -21,10 +21,27 @@ namespace BatchRename.App.Core;
 internal sealed class RenameProgressSink : IFileOperationProgressSink
 {
     private readonly CancellationToken _ct;
+    private readonly int _total;
+    private readonly int _reportEvery;
+    private readonly Action<int, int>? _onProgress;
+    private int _done;
+
     private readonly Dictionary<string, (int Hr, string? NewName)> _results =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public RenameProgressSink(CancellationToken ct) => _ct = ct;
+    /// <param name="ct">取消令牌：在 <c>PreRenameItem</c> 里检查，命中即中止后续操作。</param>
+    /// <param name="total">本批入队项数，用于进度分母。</param>
+    /// <param name="onProgress">
+    /// 进度回调（已完成, 总数）。**在 STA 工作线程上调用**，调用方自行切线程。
+    /// 按 ~100 次/批 节流，几千项也不会把 UI 打满。
+    /// </param>
+    public RenameProgressSink(CancellationToken ct, int total, Action<int, int>? onProgress = null)
+    {
+        _ct = ct;
+        _total = total;
+        _onProgress = onProgress;
+        _reportEvery = Math.Max(1, total / 100);
+    }
 
     /// <summary>源路径 → (HRESULT, Shell 实际给的最终名)。仅本次执行期间有效。</summary>
     public IReadOnlyDictionary<string, (int Hr, string? NewName)> Results => _results;
@@ -53,6 +70,12 @@ internal sealed class RenameProgressSink : IFileOperationProgressSink
             if (!string.IsNullOrEmpty(from))
             {
                 _results[from] = (hrRename.Value, pszNewName.ToString());
+            }
+
+            var done = Interlocked.Increment(ref _done);
+            if (_onProgress is not null && (done % _reportEvery == 0 || done == _total))
+            {
+                _onProgress(done, _total);
             }
         }
         catch

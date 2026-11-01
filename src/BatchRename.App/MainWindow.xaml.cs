@@ -18,15 +18,16 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _diskDebounce;
     private UndoJournal? _lastJournal;
     private bool _busy;
-
-    /// <summary>程序性改「全选」勾选状态时置位，避免反过来把列表全勾/全清。</summary>
-    private bool _syncingSelectAll;
+    private CancellationTokenSource? _execCts;
 
     /// <summary>执行/撤销后的结果文案。非空时底栏优先显示它，不被预览统计覆盖。</summary>
     private string? _resultMessage;
 
     /// <summary>程序性地改输入框时置位，避免触发「用户改规则」从而清掉结果文案。</summary>
     private bool _settingText;
+
+    /// <summary>上一次在列表里按下的 x（视口坐标）；-1 = 不是列表点击。- 见 OnItemRowClick。</summary>
+    private double _lastPointerX = -1;
 
     public MainWindow(ShellPayload payload)
     {
@@ -59,6 +60,17 @@ public sealed partial class MainWindow : Window
 
         // handledEventsToo = true：Space 会被 ListView 自己吃掉，必须在已处理阶段也能收到
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnRootKeyDown), handledEventsToo: true);
+
+        // 状态列颜色：XAML 侧已用 {ThemeResource} 声明成 5 个画刷，这里只把"取画刷"注入给转换器。
+        // 不缓存、不自己判主题——ThemeResource 换值时改的是同一个 brush 实例的 Color，
+        // 已绑定的行会自动刷新。
+        StateToBrushConverter.Resolver = key =>
+            RootGrid.Resources.TryGetValue(key, out var v) ? v as Microsoft.UI.Xaml.Media.Brush : null;
+
+        // 行内勾选列：ListViewItem 会吃掉子元素的指针事件，只能在已处理阶段旁听，
+        // 记下按下位置供 ItemClick 判断「点的是不是勾选列」。
+        ItemList.AddHandler(UIElement.PointerPressedEvent,
+            new PointerEventHandler(OnListItemPointerPressed), handledEventsToo: true);
 
         // 规格书 §8.11 两层防抖：
         //   第一层 150ms —— 只跑文本规则 + 批内互撞/环（纯内存，敲字即刷新）
@@ -270,22 +282,111 @@ public sealed partial class MainWindow : Window
 
     private void OnRuleChanged(object sender, SelectionChangedEventArgs e) => OnUserRuleChanged();
 
-    private void OnItemEnabledChanged(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 行点击：落在勾选列（左侧 56px）才切换启用状态，点其它位置只是选中。
+    /// 为什么不用行内 CheckBox：它是模板化控件，每个已实现行都要摊一份模板与动画资源——
+    /// 实测 5000 项时独占 46–49MB（179.8MB → 137MB）。
+    /// 为什么不用行内 Tapped：ListViewItem 会吃掉子元素的 Tapped；ItemClick 是官方整行命中通道，
+    /// 但它不给点击位置，所以用 PointerPressed（handledEventsToo）记下 x 再在 ItemClick 里判断。
+    /// </summary>
+    private void OnItemRowClick(object sender, ItemClickEventArgs e)
     {
+        if (_busy) return;
+        if (_lastPointerX is < 0 or >= CheckColumnHitWidth) return;   // 非勾选列：保留默认的"选中"
+        if (e.ClickedItem is not RenameItem item) return;
+
+        item.IsEnabled = !item.IsEnabled;
         SyncSelectAllBox();
-        OnUserRuleChanged();
+        _resultMessage = null;
+        QueueRefresh();
     }
 
-    /// <summary>全选 / 全不选（规格书 §7.4 底栏）。</summary>
-    private void OnSelectAllChanged(object sender, RoutedEventArgs e)
+    /// <summary>勾选列的命中宽度：列宽 40 + 行内左边距，留一点余量。</summary>
+    private const double CheckColumnHitWidth = 56;
+
+    private void OnListItemPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        // 程序性同步（_syncingSelectAll）与"部分选中"（null）都不要反过来改列表
-        if (_syncingSelectAll || SelectAllBox.IsChecked is null) return;
+        _lastPointerX = e.GetCurrentPoint(ItemList).Position.X;
+    }
+
+    /// <summary>
+    /// 失败清单对话框（规格书 §8.9.5 / M3 遗留）。
+    /// 底栏那行只能塞下首条原因，所以多项失败时用对话框把每一项的"原名 → 新名 + 原因"列出来；
+    /// 超过 200 条只列前 200，其余用「复制清单」带走（避免一次塞几千个 TextBlock）。
+    /// </summary>
+    private async Task ShowFailureDialogAsync(IReadOnlyList<RenameEntryResult> failures)
+    {
+        if (failures.Count == 0) return;
+
+        const int maxRows = 200;
+        var panel = new StackPanel { Spacing = 10 };
+        foreach (var f in failures.Take(maxRows))
+        {
+            panel.Children.Add(new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                Text = $"{System.IO.Path.GetFileName(f.From)} → {System.IO.Path.GetFileName(f.To)}\n{f.Error ?? "未知原因"}"
+            });
+        }
+        if (failures.Count > maxRows)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                Text = $"…其余 {failures.Count - maxRows} 项省略，可用「复制清单」查看全部"
+            });
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = RootGrid.XamlRoot,
+            Title = $"有 {failures.Count} 项改名失败",
+            Content = new ScrollViewer
+            {
+                Content = panel,
+                MaxHeight = 360,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            },
+            PrimaryButtonText = "关闭",
+            SecondaryButtonText = "复制清单",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Secondary) return;
+
+        try
+        {
+            var text = string.Join(Environment.NewLine,
+                failures.Select(f => $"{f.From} -> {f.To}\t{f.Error ?? "未知原因"}"));
+            var pack = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            pack.SetText(text);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(pack);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("复制失败清单到剪贴板失败", ex);
+        }
+    }
+
+    /// <summary>
+    /// 全选 / 全不选（规格书 §7.4 底栏）。
+    ///
+    /// 为什么用 Click 而不是 Checked/Unchecked/Indeterminate：
+    /// ① 中间态（null）只是**显示**用的——部分勾选时告诉用户"并非全选"。它不该被用户点出来，
+    ///    而 `IsThreeState="True"` 的点击循环是 false → true → null → false，所以"全勾时点一下"
+    ///    会落到 null；旧实现遇到 null 直接 return，结果框停在中间态、列表一点没变（假死）。
+    /// ② 三个事件对**程序性赋值**同样会触发，靠 `_syncingSelectAll` 兜着，容易再踩。
+    /// 现在只认 Click，且意图完全从列表真实状态推断：不是全勾 → 全勾；已经全勾 → 全不勾，
+    /// 点完立刻 SyncSelectAllBox() 把显示纠正回 true/false，中间态不会留下。
+    /// </summary>
+    private void OnSelectAllClick(object sender, RoutedEventArgs e)
+    {
         if (_items.Count == 0) return;
 
-        var on = SelectAllBox.IsChecked == true;
-        foreach (var item in _items) item.IsEnabled = on;
+        var allOn = _items.All(i => i.IsEnabled);
+        foreach (var item in _items) item.IsEnabled = !allOn;
 
+        SyncSelectAllBox();
         _resultMessage = null;
         QueueRefresh();
     }
@@ -316,10 +417,10 @@ public sealed partial class MainWindow : Window
     {
         if (_items.Count == 0) return;
 
+        // 只在「显示」层用中间态：部分勾选时给 null，全勾/全不勾给 true/false。
+        // 不设 _syncingSelectAll 之类护栏了——全选框现在只监听 Click，程序性赋值不会再回调进来。
         var enabled = _items.Count(i => i.IsEnabled);
-        _syncingSelectAll = true;
         SelectAllBox.IsChecked = enabled == 0 ? false : enabled == _items.Count ? true : null;
-        _syncingSelectAll = false;
     }
 
     private RenameRule BuildRule() => new()
@@ -393,9 +494,36 @@ public sealed partial class MainWindow : Window
     {
         _busy = busy;
         BusyRing.IsActive = busy;
+        BusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        BusyBar.Maximum = 1;
+        BusyBar.Value = 0;
+        CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.IsEnabled = busy;
         ExecuteButton.IsEnabled = !busy &&
             _items.Any(i => i.IsEnabled && i.State is ItemState.Ok or ItemState.Warning);
         UndoButton.IsEnabled = !busy && _lastJournal is { State: JournalState.Applied };
+    }
+
+    /// <summary>执行期的「取消」：置位令牌 → sink 在下一项的 PreRenameItem 返回失败 → Shell 停止后续。</summary>
+    private void OnCancelExecute(object sender, RoutedEventArgs e)
+    {
+        if (_execCts is null) return;
+
+        CancelButton.IsEnabled = false;
+        FooterText.Text = "正在取消…";
+        try { _execCts.Cancel(); } catch { }
+    }
+
+    /// <summary>进度回调来自 STA 工作线程，必须切回 UI 线程。</summary>
+    private void ReportProgress(int done, int total)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_busy) return;
+            BusyBar.Maximum = Math.Max(1, total);
+            BusyBar.Value = done;
+            FooterText.Text = $"正在改名 {done} / {total} …";
+        });
     }
 
     private async void OnExecute(object sender, RoutedEventArgs e)
@@ -434,13 +562,20 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        List<RenameEntryResult>? failures = null;   // 等 busy 关掉之后再弹失败清单
         SetBusy(true);
         try
         {
             var runner = new FileOperationRunner();
             // AddUndoRecord: true —— 整批登记到资源管理器撤销栈，关掉本程序后 Ctrl+Z 仍然有效
+            _execCts?.Dispose();
+            _execCts = new CancellationTokenSource();
+
             var result = await runner.RunAsync(
-                targets, new RenameRunOptions(WindowHandle, AddUndoRecord: true));
+                targets,
+                new RenameRunOptions(WindowHandle, AddUndoRecord: true),
+                _execCts.Token,
+                ReportProgress);
 
             // 规格书 §8.10.2：state=Applied 时必须带上逐项真实结果。
             // 不回写的话，失败项在 journal 里仍标记为 Ok=true，
@@ -456,18 +591,26 @@ public sealed partial class MainWindow : Window
             journal.Save();
             _lastJournal = journal;
 
-            _resultMessage = result.Failed == 0
-                ? $"已改名 {result.Succeeded} 项 · 撤销(Ctrl+Z)"
-                : $"已改名 {result.Succeeded} 项，{result.Failed} 项失败 · 撤销(Ctrl+Z)";
-
-            if (result.Failed > 0)
+            if (result.Cancelled)
             {
-                var first = result.Entries.FirstOrDefault(x => !x.Ok);
-                SetError($"部分失败：{first?.Error ?? "未知原因"}");
+                _resultMessage = $"已取消，完成 {result.Succeeded} 项";
+                SetError(null);   // 用户主动取消不算错误
+            }
+            else if (result.Failed == 0)
+            {
+                _resultMessage = $"已改名 {result.Succeeded} 项 · 撤销(Ctrl+Z)";
+                SetError(null);
             }
             else
             {
-                SetError(null);
+                _resultMessage = $"已改名 {result.Succeeded} 项，{result.Failed} 项失败 · 撤销(Ctrl+Z)";
+                var first = result.Entries.FirstOrDefault(x => !x.Ok);
+                SetError($"部分失败：{first?.Error ?? "未知原因"}");
+
+                // 底栏只能放一条原因，多项失败时列全（M3 遗留 §8.9.5）。
+                // 注意不能在这里直接 await：SetBusy(false) 在 finally 里，会被对话框挡住，
+                // 表现为对话框弹出时底栏还在"正在改名 N / N"、取消按钮还亮着。
+                failures = result.Entries.Where(x => !x.Ok).ToList();
             }
 
             // 🔧 回归修复：执行后**不再清空**查找/替换框。
@@ -517,6 +660,12 @@ public sealed partial class MainWindow : Window
         finally
         {
             SetBusy(false);
+        }
+
+        // busy 已经关掉、取消按钮也收了，这时候列失败清单才不会被"正在改名"挡住
+        if (failures is { Count: > 0 })
+        {
+            await ShowFailureDialogAsync(failures);
         }
     }
 
