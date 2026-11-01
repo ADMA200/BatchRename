@@ -379,23 +379,43 @@ public sealed partial class MainWindow : Window
     /// 现在只认 Click，且意图完全从列表真实状态推断：不是全勾 → 全勾；已经全勾 → 全不勾，
     /// 点完立刻 SyncSelectAllBox() 把显示纠正回 true/false，中间态不会留下。
     /// </summary>
-    /// <summary>§10.3：26H2 把第三方扩展默认收进「应用扩展」子菜单，给一条直达设置的入口。</summary>
+    /// <summary>§10.3：26H2 把第三方扩展默认收进「应用扩展」子菜单。
+    ///
+    /// 不直接用 `ms-settings:` 跳「右键菜单」专属页——那个页面是 26H2 新增的，
+    /// 没有稳定的 URI；而 `LaunchUriAsync` 对无效 URI 会返回 true 却打开设置首页，
+    /// 结果是用户看到一个毫无帮助的默认页（实测踩过）。
+    /// 改为给可操作的步骤 + 一个「打开个性化设置」按钮兜底。
+    /// </summary>
     private async void OnOpenContextMenuSettings(object sender, RoutedEventArgs e)
     {
-        // 先试 26H2 的上下文菜单设置页，打不开再退回个性化首页
-        foreach (var uri in new[] { "ms-settings:personalization-contextmenu", "ms-settings:personalization" })
+        var dlg = new ContentDialog
         {
-            try
+            Title = "命令没出现在右键菜单？",
+            Content = new TextBlock
             {
-                if (await Windows.System.Launcher.LaunchUriAsync(new Uri(uri))) return;
-            }
-            catch
-            {
-                // 试下一个
-            }
-        }
+                TextWrapping = TextWrapping.Wrap,
+                Text = "26H2 默认把第三方扩展收进「应用扩展」子菜单。\n\n" +
+                       "最省事：右键菜单最底部有个「自定义菜单」按钮，点它直达设置页，\n" +
+                       "把「批量重命名」设为显示在主菜单。\n\n" +
+                       "手动进入：设置 > 个性化 > 右键菜单。\n\n" +
+                       "或者直接绕开：右键 > 发送到 > 批量重命名（不受折叠影响，多选也支持）。"
+            },
+            PrimaryButtonText = "打开个性化设置",
+            CloseButtonText = "知道了",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = Content.XamlRoot
+        };
 
-        SetError("无法打开设置页，请手动进入：设置 > 个性化 > 上下文菜单");
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
+
+        try
+        {
+            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:personalization"));
+        }
+        catch
+        {
+            SetError("无法打开设置页，请手动进入：设置 > 个性化 > 右键菜单");
+        }
     }
 
     private void OnSelectAllClick(object sender, RoutedEventArgs e)
