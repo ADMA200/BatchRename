@@ -1,222 +1,159 @@
 # BatchRename
 
-Windows 11 资源管理器右键菜单里的批量重命名工具，对标 PowerRename，个人自用、非商业。
+Windows 11 资源管理器里的批量重命名工具。选中一批文件 → 右键 → 实时预览新旧对照 → 执行。
 
-选中 N 个文件/文件夹 → 右键「批量重命名」→ 实时预览「原名 → 新名」→ 执行 / `Ctrl+Z` 撤销。
+改名前能看见每一项会变成什么，改完能一键撤回。
 
-撤销有**两条独立通路**：软件内的「撤销」按钮（读 `last-batch.json`，关掉程序再打开也能撤最近一批）与**资源管理器里的 `Ctrl+Z`**（由 `IFileOperation` 的 `FOFX_ADDUNDORECORD` 登记到 Shell 撤销栈，程序退出后依然有效，一次退一批）。
+## 功能
 
-## 当前状态
+- **查找替换**：支持纯文本与正则，可区分大小写
+- **作用域**：只改主名、只改扩展名、或整个文件名
+- **大小写转换**：全大写 / 全小写 / 每词首字母大写
+- **实时预览**：原名 → 新名对照，逐行标注状态（未改变 / 可执行 / 冲突 / 非法）
+- **冲突处理**：默认红字阻止执行；勾选「冲突时自动编号」则自动改成 `a (1).txt`
+- **逐项勾选**：只改想改的那几项，支持全选
+- **两条撤销通路**：软件内「撤销」管最近一批；资源管理器 `Ctrl+Z` 整批退回，程序关掉也有效
+- **单实例**：再次右键不会开出第二个窗口，复用已有窗口
+- **保留输入**：执行后不清空你填的查找/替换词，方便微调后再来一次
 
-| 里程碑 | 范围 | 状态 |
-|---|---|---|
-| **M1** | 右键菜单出现 + 拉起窗口 + 路径透传 | ✅ 已通过验收 |
-| **M2** | 重命名引擎 + 实时预览（124 项自动断言） | 引擎 ✅ / UI ✅ |
-| **M3** | 执行 + 撤销（`IFileOperation` + 单文件事务日志 + Shell 撤销栈） | ✅ 已通过真机验证 |
-| **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ✅ 已通过真机验证 |
-| **M5** | 安装闭环 + SendTo 兜底入口 | ✅ 卸载/全新安装闭环、DisplayName 生效、SendTo 已建；传统 verb 有意不做（`MultiSelectModel` 默认 `Single`，多选只传第一个） |
+## 安装
 
-当前基线标签：`v0.4-M5`
+### 方式一：安装包（推荐）
 
-## 环境要求
+下载 `BatchRename-Setup-<日期>.exe`，双击 → 选择安装位置 → 完成。
 
-| 组件 | 版本 | 说明 |
-|---|---|---|
-| Windows | 11 26H2 / Build 26300+ | 稀疏包清单的 `MaxVersionTested` 按此填 |
-| Visual Studio | 2026 | 需勾选「.NET 桌面开发」+ **「使用 C++ 的桌面开发」**（含 MSVC 工具集，缺 `include` 目录会无法编译） |
-| Windows SDK | 10.0.26100.0 | |
-| .NET | 10 SDK | `dotnet --list-sdks` 应能看到 10.x |
-| Windows App SDK | 2.6.4 | 走 NuGet，无需单独安装 |
-| **开发者模式** | **必须开启** | 稀疏包免签注册的前置条件，未开报 `0x80073CFF` |
+安装包自带 .NET 运行时，目标机只需**开启开发者模式**。
 
-开启开发者模式：
+### 方式二：绿色版
 
-```powershell
-# 管理员 PowerShell
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
-  -Name 'AllowDevelopmentWithoutDevLicense' -Value 1 -Type DWord
+下载 `BatchRename-<日期>.zip`，解压到一个固定目录，双击里面的 `安装.cmd`。
+
+需要目标机已装 .NET 10 Desktop Runtime（x64）。
+
+### 安装前：开启开发者模式
+
+设置 > 系统 > 开发者选项 > 开发人员模式 → 打开。
+
+不开会报 `0x80073CFF`。安装程序会先检查，没开就直接拦下来。
+
+### 卸载
+
+设置 > 应用 > 已安装的应用 > 找到「批量重命名」> 卸载。
+
+或运行安装目录下的 `Uninstall.cmd`。安装目录本身需要你手动删。
+
+> ⚠ **安装后不要移动或重命名安装目录**。右键菜单按绝对路径注册，移动后菜单会失效，重新跑一次安装程序即可恢复。
+
+## 使用
+
+### 打开
+
+1. 选中一个或多个文件/文件夹 → 右键 → **批量重命名**
+2. 选中后右键 → **发送到** → **批量重命名**（不受新菜单折叠影响）
+
+### 界面
+
+```
+┌─────────────┬──────────────────────────────────┐
+│ 查找        │  原名称        新名称      状态    │
+│ 区分大小写  │  photo 1.jpg   vacation 1.jpg  可执行│
+│ 使用正则    │  photo 2.jpg   vacation 2.jpg  可执行│
+│ 替换为      │  report.txt    report.txt      未改变│
+│ 应用于      │                                  │
+│ 转换大小写  │                                  │
+│ 冲突时自动编号│                                 │
+│             │                                  │
+│   撤销 执行  │           已改名 2 项 · 撤销(Ctrl+Z)│
+└─────────────┴──────────────────────────────────┘
 ```
 
-## 快速开始
+左栏设规则，右栏看效果。每行的勾选框决定这一项是否参与本次改名。
 
-### 1. 构建
+### 快捷键
 
-**方式 A：Visual Studio / MSBuild（推荐）**
-
-```powershell
-msbuild BatchRename.sln /p:Configuration=Release /p:Platform=x64 /m
-```
-
-或用 VS 2026 直接打开 `BatchRename.sln`，选 `Release | x64` 生成。
-
-**方式 B：命令行分部构建**
-
-```powershell
-# Shell（C++，输出到 bin\publish\BatchRename.Shell.dll）
-msbuild src\BatchRename.Shell\BatchRename.Shell.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=%~dp0
-
-# 主程序（C#，publish 到 bin\publish\BatchRename.App\）
-dotnet publish src\BatchRename.App\BatchRename.App.csproj -c Release
-```
-
-> 若当前环境限制 `MSBuild.exe` 执行（部分安全策略会拦），C++ 侧可改用 `cl.exe` + `link.exe` 手工编译，完整命令见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#构建与产物)。
-
-### 2. 安装（注册右键菜单）
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\Install-Sparse.ps1
-```
-
-脚本会做：三处 CLSID 一致性自检 → 检查 Publisher/Identity 变更并卸载旧包 → `Add-AppxPackage -Register` → 创建 SendTo 快捷方式 → 重启 explorer。
-
-**必须以普通用户运行**，不需要管理员。
-
-> **右键菜单找不到命令？** 26H2 默认把第三方扩展收进「应用扩展」子菜单。
-> 三条路：① 设置 > 个性化 > 上下文菜单 里提升到主菜单；② 用「发送到 > 批量重命名」（不受折叠影响）；
-> ③ 应用内左栏底部有直达设置页的链接。
-
-### 3. 卸载
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\Uninstall.ps1
-```
-
-### 4. 跑断言测试
-
-两个入口跑的是**同一份断言实现**（`tests\BatchRename.Core.Tests\CoreSuite.cs`），不会各写一遍漂移：
-
-```powershell
-# xUnit（CI 用，一条测试覆盖全部断言，同时守卫断言条数 == 124）
-dotnet test tests\BatchRename.Core.Tests\BatchRename.Core.Tests.csproj -c Release
-
-# 控制台（人肉看逐条输出）
-dotnet build src\BatchRename.ShellTest\BatchRename.ShellTest.csproj -c Release
-dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRename.ShellTest.dll
-```
-
-覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 回滚 / **文件与目录的仅大小写改名** / 执行中断后的磁盘回写 / 二次改名 / 链式排序 / 循环检测 / 逐项失败 / 两层防抖 / 执行期进度与取消，共 **124 项**。退出码非 0 表示有断言失败。
-
-> ⚠️ 测试 10–16 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**；journal 也会被指到 `%TEMP%\BatchRenameTestJournal\`，不会覆盖你的 `last-batch.json`。
-> 测试执行器的 `AddUndoRecord` 一律为 `false`，所以不会往你资源管理器的 Ctrl+Z 里塞临时文件。
-> 但只要在 Windows 上跑这些测试，就别同时开着 `docs\samples` 做手工改名测试，避免互相干扰。
-
-## 装到其它设备
-
-```powershell
-.\tools\Package-Portable.ps1
-```
-
-产出 `dist\BatchRename-<日期>.zip`（约 60MB）。拷到目标机解压，**双击「安装.cmd」**即可，不用开 PowerShell 改执行策略。
-
-目标机需要：
-
-| 条件 | 说明 |
+| 按键 | 作用 |
 |---|---|
-| Windows 11 26H2（Build 26300+） | 稀疏包清单的 `MaxVersionTested` 按此填 |
-| **开发者模式** | 必须开启，否则报 `0x80073CFF` |
-| **.NET 10 Desktop Runtime（x64）** | 当前是框架依赖发布。想免掉这一条用 `-SelfContained`（约 +70MB） |
-| 无需管理员 | 包注册在任何 IL 都可以 |
+| `Enter` | 执行改名 |
+| `Esc` | 关闭窗口（有未执行改动时会先确认） |
+| `Ctrl` + `A` | 全选 / 全不选 |
+| `Ctrl` + `Z` | 撤销最近一批 |
+| `Space` | 切换当前行的勾选 |
+| `↑` / `↓` | 上下移动选中行 |
 
-> ⚠ **安装后不要移动或重命名目录**。稀疏包注册的是绝对路径（`-ExternalLocation`），移动后菜单失效，得重新跑「安装.cmd」。
+### 撤销
 
-zip 内的「安装说明.txt」有完整步骤，包含"菜单没出现怎么办"。
+两条独立通路，互不干扰：
 
-### 打成单个 exe
+**软件内「撤销」按钮 / `Ctrl+Z`**
+读写应用自己的事务日志，管最近一批。关掉程序再打开，仍然能撤销上次那一批。
 
-```powershell
-.\tools\Build-Setup.ps1
-```
+**资源管理器里的 `Ctrl+Z`**
+整批一次退回，程序退出后依然有效。但它只活在资源管理器进程里，重启电脑或注销后就没了。
 
-产出 `dist\BatchRename-Setup-<日期>.exe`（约 97MB，**自带 .NET 运行时**）。拷过去双击即可，不用解压、不用先装运行时。
+## 常见问题
 
-- **安装路径可选**：启动后弹目录选择（默认 `%LOCALAPPDATA%\BatchRename\app`），也能直接输入或粘贴路径
-- 会写入「应用和功能」条目，卸载走那里即可
-- 静默安装：`BatchRenameSetup.exe /S`，指定路径加 `--dir "D:\Tools\BatchRename"`（退出码 0 = 成功，日志在 `%LOCALAPPDATA%\BatchRename\setup.log`）
+### 右键菜单里找不到「批量重命名」
 
-> 目录选择用 `SHBrowseForFolder` P/Invoke 而不是 WinForms 的 `FolderBrowserDialog`：
-> 后者会把整套 Desktop 运行时拖进来，体积从 97MB 涨到 110MB。
+Windows 11 26H2 默认把第三方扩展收进「应用扩展」子菜单。三种办法：
 
-> 为什么不做 MSIX：真 MSIX 需要签名证书，自签证书在目标机必须被信任，否则报 `0x800B0109`。
-> 对"拷一台机器过去双击装好"的场景，那一步比现在更麻烦。
+1. 右键菜单**最底部**有个「自定义菜单」按钮，点它直达设置页
+2. 手动：设置 > 个性化 > 右键菜单 → 找到「批量重命名」→ 设为显示在主菜单
+3. 直接绕开：右键 > 发送到 > 批量重命名（不受折叠影响，多选也支持）
 
-## 目录结构
+### 安装时报 `0x80073CFF`
 
-```
-BatchRename\
-├─ BatchRename.sln
-├─ docs\
-│  ├─ SPEC.md                规格书（v1.5，契约与验收标准）
-│  ├─ ARCHITECTURE.md        架构说明（进程拓扑、模块、决策、排障）
-│  ├─ REVIEW-2026-11-01.md   代码评审与实测记录（含系统级撤销验证、journal 去留分析）
-│  └─ samples\               验收用样本文件名（15 项边界情况）
-├─ src\
-│  ├─ BatchRename.Shell\     C++ / WRL / x64，右键菜单 COM 组件
-│  ├─ BatchRename.App\       C# / WinUI 3，主程序
-│  │  ├─ Core\               引擎与执行器（不依赖 WinUI）
-│  │  │  ├─ NameSplitter.cs          主名/扩展名切分
-│  │  │  ├─ RenameRule.cs            替换 + 大小写
-│  │  │  ├─ RenameEngine.cs          编排 + 九条校验 + 冲突检测
-│  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行（含 Shell 撤销栈登记）
-│  │  │  ├─ ConflictResolver.cs      批内互撞/循环/磁盘冲突/自动编号（从 RenameEngine 抽出）
-│  │  │  ├─ UndoJournal.cs           单文件事务日志（write-ahead）+ 反向执行
-│  │  │  └─ NativeMethods.txt        CsWin32 输入清单
-│  │  ├─ Services\
-│  │  │  ├─ SingleInstanceGate.cs    命名 Mutex + 命名管道激活
-│  │  │  └─ AppLog.cs                App 侧日志（异常兜底，1MB 循环）
-│  │  └─ Models\RenameItem.cs
-│  └─ BatchRename.ShellTest\ 断言测试的**控制台入口**（薄壳，逐条打印）
-├─ tests\BatchRename.Core.Tests\
-│  ├─ CoreSuite.cs          124 条断言的唯一实现（console 与 xUnit 共用）
-│  └─ CoreSuiteTests.cs     xUnit 入口 + 断言条数守卫
-├─ .github\workflows\ci.yml  test + App build + console build（windows-latest）
-├─ packaging\
-│  ├─ AppxManifest.xml       稀疏包清单（CLSID 与 Verb 注册）
-│  └─ Assets\                3 个 Logo
-├─ tools\
-│  ├─ Install-Sparse.ps1
-│  └─ Uninstall.ps1
-└─ bin\publish\              外部位置根（安装时 -ExternalLocation 指向这里）
-   ├─ BatchRename.Shell.dll
-   ├─ Assets\
-   └─ BatchRename.App\
-```
+开发者模式没开。开启后重新运行安装程序。
 
-## 文档
+### 安装后菜单图标是空白或旧的
 
-| 文档 | 内容 |
+重启资源管理器：任务管理器里找到「Windows 资源管理器」→ 重新启动。
+
+### 会不会把文件改坏
+
+设计上做了几层保护：
+
+- **目标名已存在**默认红字阻止，不会静默覆盖
+- **批内循环改名**（`a→b` 同时 `b→a`）在预览阶段就被拦下，不会互相覆盖丢内容
+- **链式改名**（`a→b`、`b→c`）按依赖顺序执行，先让出名字的一方先改
+- **每次执行前写事务日志**，中途崩溃或断电，下次启动会提示回滚未完成的批次
+- 所有改名都通过 Windows 的 `IFileOperation` 完成，和资源管理器自己改名走同一条路径
+
+### 支持 Windows 10 吗
+
+不支持。界面用了 Win11 的 Mica 材质，右键菜单用的是 26H2 的新菜单扩展机制。
+
+### 支持 ARM64 吗
+
+目前只编 x64。ARM64 设备（如骁龙本）可以通过 x64 模拟运行。
+
+### 能改子文件夹里的文件吗
+
+不能。只处理你选中的那一层，不会递归。
+
+## 系统要求
+
+| 项 | 要求 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 规格书 v1.5。需求、契约、清单全文、脚本全文、验收标准、已知缺陷修订 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构说明。进程拓扑、启动时序、模块职责、关键决策、排障地图 |
-| [docs/REVIEW-2026-11-01.md](docs/REVIEW-2026-11-01.md) | 代码评审。问题清单（P0/P1/P2）、实测证据、优化建议与修复批次 |
-
-## 维护约定
-
-1. **工程改动 → 同步规格书**。契约、属性、CLI 行为有任何变化，或踩到新坑，立刻更新 `docs/SPEC.md`，并在正文加 `🔧 vX.Y` 标注 + 头部修订记录表追加一行。
-2. **git 提交前 → 更新 README 与架构说明**。里程碑状态、构建方式、目录结构、架构决策有变化就先改这两份，再提交。
-3. 提交信息用 `feat:` / `fix:` / `docs:` / `chore:` 前缀，正文列要点。
+| Windows | 11 26H2（Build 26300 或更高） |
+| 架构 | x64 |
+| 开发者模式 | **必须开启**（安装程序会检查） |
+| .NET 运行时 | 安装包自带；绿色版需 .NET 10 Desktop Runtime (x64) |
 
 ## 已知限制
 
-- **失败清单最多列 200 条**：超出部分提示用「复制清单」带走（避免一次塞几千个 TextBlock）；底栏仍只显示首条原因
-- **软件内撤销只覆盖最近一批**：`last-batch.json` 每次执行覆盖写，没有历史批次列表（7 天 / 20 批的历史已按 v1.5 砍掉）；更早的批次只能靠资源管理器的 Ctrl+Z（受 Shell 撤销栈生命周期限制）
-- **执行中断会留下半完成状态**：`OnExecute` 已加 try/catch + `JournalError`，异常时按磁盘现状回写逐项 ok 并写 `app.log`；中断只会在下次启动时提示回滚
-- 未做拖放启动（M5 遗留，SendTo 已覆盖多选场景）
-- 图标为临时方案（应用 Aa / 菜单铅笔），任务栏 plating 未彻底解决
-- 不支持递归子文件夹、云盘/回收站等虚拟项（设计上不做）
+- 不支持递归子文件夹
+- 不支持拖放文件到窗口（用右键或「发送到」）
+- 软件内撤销只保留最近一批，没有历史批次列表
+- 不支持云盘占位文件、回收站等虚拟项
+- 失败提示只显示首条原因，完整清单可复制
 
-## 历史坑（详见 SPEC 各版修订记录与 docs/REVIEW-2026-11-01.md）
+## 开发
 
-- **`File.Exists` 在 NTFS 上忽略大小写**，不能用来校验「仅大小写改名」，也不能判断撤销时源名是否被占用
-- **`File.Exists` 对目录返回 false**，判断目录存在必须用 `Directory.Exists`（v1.5 写 `LoadLast` 时踩到）
-- **`File.Move` 动不了目录**（抛 `FileNotFoundException`）；目录改名要用 `Directory.Move` 或交给 `IFileOperation`
-- **系统级 Ctrl+Z 不是死路**：`FOFX_ADDUNDORECORD` 会把整批登记进 Shell 撤销栈，进程退出后依然有效；旧版"有意不加 `FOF_ALLOWUNDO`"导致资源管理器里 Ctrl+Z 完全无反应
-- **`File.Move` / `IFileOperation` 都能直接做仅大小写改名**（文件与目录皆可）——v1.2 的"必须两步中转"是误判，真正的病因是"同一 `IFileOperation` 队列引用尚未生成的临时名"
-- **磁盘冲突检测必须在预览阶段做**，否则执行会静默覆盖同名文件；`FOF_NOCONFIRMATION` 下覆盖连提示都没有
-- **"源名会让出"的冲突豁免会把环放过去**：`a→b` + `b→a` 两项互相把对方当空位。v1.5 起由 `MarkBatchCycles` 在预览阶段拦掉（整环标「批内循环改名」）
-- **链式改名 `a→b` + `b→c` 的入队顺序决定会不会丢数据**：错序时 `a→b` 会先覆盖 `b` 的原内容。v1.5 起执行器按依赖排序入队
-- **`IFileOperation` 改名失败的 HRESULT 常来自复制引擎**（`0x8027xxxx`，如 `0x80270027` = 源文件被占用），不是 `0x8007xxxx`；只映射 Win32 那族会把错误显示成原始码
-- **`ListView` 行模板里放一个 `CheckBox`，5000 项就多占 46–49MB**：模板化控件（含内置状态动画）会按已实现行摊资源，换成 `Border` + `FontIcon` 后 180MB → 137MB，再按官方模板复刻成双层 Border 为 139MB。行内只允许叶子元素
-- **WinUI 3 的 `XamlControlsResources.ThemeDictionaries` 按启动时主题固化**：代码里取 `"Light"` 字典拿到的可能仍是深色值（实测 `TextFillColorSecondary` 两套都是 `#C5FFFFFF`），所以**不要用代码查主题色**——把 `{ThemeResource}` 写在 XAML 里、转换器只取现成的 brush 对象；切主题时 XAML 改的是同一个 brush 实例的 `Color`，已绑定的行自动刷新（缓存反而会把它钉死）
-- **`IsThreeState="True"` 的点击循环会经过 `null`**：三态只该用来"显示"部分选中；在 `Checked/Indeterminate` 回调里对 `null` 直接 return，会让全选框停在中间态且列表毫无变化。用 `Click` + 从列表真实状态推断意图，处理完立刻回写显示
-- **WinUI 3 没有 `CheckBoxFillUnchecked` 这批键**：那是 UWP 命名，`ThemeResource` 解析期直接抛 `Cannot find a Resource`，进程起不来。行内自绘勾选框要用通用令牌：勾选态 `AccentFillColorDefaultBrush` + `TextOnAccentFillColorPrimaryBrush`，未勾选态 **`Transparent`** 填充 + `ControlStrongStrokeColorDefaultBrush` 描边
-- **`ListViewItem` 会吃掉子元素的 `Tapped`/`PointerPressed`**：行内交互只能走 `ListView.ItemClick`（`IsItemClickEnabled="True"`），要判"点的是哪一列"得另外用 `AddHandler(PointerPressedEvent, …, handledEventsToo: true)` 记下 x
+技术文档：
+
+| 文档 | 内容 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程拓扑、启动时序、模块职责、关键决策、排障地图、构建与测试 |
+| [docs/SPEC.md](docs/SPEC.md) | 规格书：需求、接口契约、清单与脚本全文、验收标准、历次修订记录 |
+
+想参与开发看 ARCHITECTURE 的「构建」与「测试」两节。

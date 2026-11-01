@@ -62,7 +62,7 @@ v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是�
 
 ## v1.5 修订记录（2026-11-01：系统级撤销、journal 降级、CaseOnly 两步作废）
 
-v1.5 依据真实 `IFileOperation` 探针 + 资源管理器实发 `Ctrl+Z` 的端到端实测修订（详见 `docs/REVIEW-2026-11-01.md` §2.5 / §7.6）。
+v1.5 依据真实 `IFileOperation` 探针 + 资源管理器实发 `Ctrl+Z` 的端到端实测修订（探针方法与结论见 ARCHITECTURE §10）。
 
 | # | 位置 | v1.4 的问题 | v1.5 更正 |
 |---|---|---|---|
@@ -1986,12 +1986,12 @@ UI 每 100 条 `TryEnqueue` 刷一次进度，不要逐条。**v1.5 起这条已
 - [x] `Install-Sparse.ps1` 跑通，末尾无报错，`Get-AppxPackage -Name BatchRename.Shell` 有输出且 `Status` 为 `Ok`
       → 实测 `BatchRename.Shell_1.0.0.0_x64__81759h8xb5n4c`，`Status: Ok`
 - [x] 单文件右键 → 26H2 菜单出现「批量重命名」（可能在「应用扩展」子菜单下）
-- [ ] `Shift + 右键` → 经典菜单里也能看到（如果实现了传统 verb 兜底，见 §10）—— **未实现，非 M1 阻塞项**
+- [x] ~~`Shift + 右键` → 经典菜单里也能看到~~ → **有意不做**。传统 verb 的 `MultiSelectModel` 默认 `Single`，多选只传第一个文件，对批量工具等于废掉；改用 SendTo 作为兜底入口（§10.2 入口②）
 - [x] 选 3 个文件 → 窗口显示「收到 3 条路径」，中文路径、含空格路径、含 `&` 路径全部正确
 - [x] 选 1 个文件夹 → 同样能进
 - [x] 「此电脑」「回收站」「桌面空白」右键 → 菜单项**不出现**
 - [x] `ShellTest.exe` 能直接 `CoCreateInstance` 调通（此条是排障基础设施，必须先有）
-      → 当前实现为**引擎断言测试**（33 项），未做 COM 直调；COM 激活已用 `[Activator]::CreateInstance` 验证过
+      → 当前实现为**引擎断言测试**（124 项），未做 COM 直调；COM 激活已用 `[Activator]::CreateInstance` 验证过
 - [ ] **把 `BatchRename.App.exe` 改名藏起来**再右键 → 弹出错误框（不是静默无反应），且 `logs\shell.log` 有记录；随后下一次右键菜单**不卡**（验证弹框没阻塞 STA）
       → 错误框路径已验证（曾因 `SetHandleInformation` bug 真实触发过，日志有 `launch failed` 记录），**登录日志位置见 §5.4 的 v1.1 补记**
 - [x] 关窗后 `tasklist /fi "imagename eq BatchRename.App.exe"` 无输出（无常驻，见 §7.7）
@@ -2059,7 +2059,7 @@ M1 卡住时的排障顺序（别乱猜）：
 - [x] 手动删掉 1 个文件后撤销 → 提示"1 项失效"，其余正常
       → 断言 11 覆盖（失效 1 / 回滚 1）
 - [ ] 执行中 `taskkill` → 重启弹"上次未完成，是否回滚"
-      → 已实现（`FindPending` + ContentDialog），未做破坏性实测
+      → 已实现（`FindPending` + ContentDialog）。未做 `taskkill` 式破坏性实测，但核心路径（Pending 命中、`UndoAsync` 拒绝 Pending、`RollbackPendingAsync` 可回滚）已由断言 15 / 17 覆盖
 - [x] 改名到 `CON` / `a.` / 含 `|` → 全部在预览阶段就被拦，无法执行
       → M2 断言覆盖
 - [x] 目标已存在 → 红字 + 执行禁用
@@ -2300,3 +2300,15 @@ ie4uinit.exe -show
 | 1 | §6.2 安装 | 旧包处理只看 `Identity`/`Publisher` | **还要看安装位置**。稀疏包绑死绝对路径，从 `E:\Project\...\packaging` 装过的包不能直接从 `%LOCALAPPDATA%\...\packaging` 重注册，会报 `0x80073D0B`（"无法移动，因为该程序包正被使用或安装在其它外部位置"）。脚本现在比较 `Get-AppxPackage.InstallLocation` 与清单目录 |
 | 2 | §6.2 安装 | 卸载前不停进程 | `Remove-AppxPackage` 在 dllhost 加载着 Shell DLL 时会报 `0x80073D02`。卸载前必须先停 App 进程 + 按模块名过滤停 dllhost |
 | 3 | §6.2 分发 | 只有 zip + 脚本 | 新增 `tools/Build-Setup.ps1`：把 payload 内嵌进一个自包含单文件 exe（约 96MB），双击即装、写「应用和功能」条目、支持 `/S` 静默模式 |
+
+## v1.11 补充（2026-11-02：文档收尾与工程清理）
+
+本轮不涉及功能变更，只做文档结构整理与残留清理。
+
+| # | 位置 | 变化 |
+|---|---|---|
+| 1 | `README.md` | 重写为**面向用户**：功能、安装、使用、快捷键、常见问题、系统要求、已知限制。技术内容（环境要求、构建、测试、打包、目录结构、维护约定）全部移交 ARCHITECTURE |
+| 2 | `docs/ARCHITECTURE.md` | 新增 §6.1 与 PowerRename 的对照、§7.1 环境要求、§7.3 测试、§7.4 打包、§10 踩坑清单；§9 由「扩展点」改为「里程碑状态与后续方向」 |
+| 3 | `docs/REVIEW-2026-11-01.md` | 693 行的评审记录，架构级结论并入 ARCHITECTURE（§6.1 / §10），问题修复记录并入本文 v1.5–v1.10，原文件删除 |
+| 4 | 断言数 | 全库统一为 **124 项**（此前 33 / 67 / 79 / 118 多个版本并存） |
+| 5 | 过时标记 | M1 验收里的「Shift+右键 传统 verb」由 `[ ] 未实现` 改为 `[x] 有意不做` 并写明原因 |
