@@ -11,9 +11,9 @@ jobs:
     # WinUI 3 / CsWin32 都需要 Windows；ubuntu-latest 上 Core 里的 P/Invoke 编译不过
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -40,20 +40,39 @@ jobs:
       - name: Build (native shell extension)
         shell: powershell
         run: |
-          $proj = 'src\BatchRename.Shell\BatchRename.Shell.vcxproj'
-          $common = @($proj, '/p:Configuration=Release', '/p:Platform=x64', '/m', '/v:m')
+          # windows-latest 上 msbuild 不一定在 PATH 里（VS2022 镜像只有在开发者命令行环境下才有），
+          # 所以用 vswhere 定位 VS 自带的 MSBuild.exe。失败时把关键行抛成 ::error:: 注解：
+          # 日志接口要鉴权，注解接口公开可读。
+          $ErrorActionPreference = 'Stop'
+          try {
+            $proj = 'src\BatchRename.Shell\BatchRename.Shell.vcxproj'
+            $common = @($proj, '/p:Configuration=Release', '/p:Platform=x64', '/m', '/v:m')
 
-          $toolset = (& msbuild @common '-getProperty:PlatformToolset' 2>$null | Select-Object -Last 1)
-          $msb = (Get-Command msbuild).Source
-          Write-Host "msbuild=$msb toolset=$toolset"
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (-not (Test-Path $vswhere)) { throw "找不到 vswhere: $vswhere" }
 
-          $log = Join-Path $env:RUNNER_TEMP 'msbuild.log'
-          & msbuild @common 2>&1 | Tee-Object -FilePath $log | Select-Object -Last 60
-          if ($LASTEXITCODE -eq 0) { exit 0 }
+            $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $vsRoot) { throw "没有安装 C++ 生成工具（VC.Tools.x86.x64）" }
 
-          Write-Host "::error::toolset=$toolset msbuild=$msb"
-          Get-Content $log |
-            Where-Object { $_ -match 'error|MSB\d{4}|LNK\d{4}|C\d{4}' } |
-            Select-Object -Unique -First 6 |
-            ForEach-Object { Write-Host "::error::$_" }
-          exit 1
+            $msb = Join-Path $vsRoot 'MSBuild\Current\Bin\MSBuild.exe'
+            if (-not (Test-Path $msb)) { throw "找不到 MSBuild: $msb" }
+
+            $toolset = (& $msb @common '-getProperty:PlatformToolset' 2>&1 | Select-Object -Last 1)
+            Write-Host "msbuild=$msb"
+            Write-Host "toolset=$toolset"
+
+            $log = Join-Path $env:RUNNER_TEMP 'msbuild.log'
+            & $msb @common 2>&1 | Tee-Object -FilePath $log | Select-Object -Last 60
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+
+            Write-Host "::error::msbuild 失败（toolset=$toolset）"
+            Get-Content $log |
+              Where-Object { $_ -match 'error|MSB\d{4}|LNK\d{4}|C\d{4}' } |
+              Select-Object -Unique -First 6 |
+              ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          catch {
+            Write-Host "::error::$_"
+            exit 1
+          }
