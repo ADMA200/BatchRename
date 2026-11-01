@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -23,13 +23,19 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <!-- 本机是 VS2026（v145），GitHub 的 windows-latest 是 VS2022（v143）。
+         写死任一版都会让另一边直接 MSB8020 失败，所以按已安装的工具集挑。 -->
+    <PlatformToolset Condition="Exists('$(VCTargetsPath)Platforms\$(Platform)\PlatformToolsets\v145')">v145</PlatformToolset>
+    <PlatformToolset Condition="!Exists('$(VCTargetsPath)Platforms\$(Platform)\PlatformToolsets\v145')">v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <!-- 本机是 VS2026（v145），GitHub 的 windows-latest 是 VS2022（v143）。
+         写死任一版都会让另一边直接 MSB8020 失败，所以按已安装的工具集挑。 -->
+    <PlatformToolset Condition="Exists('$(VCTargetsPath)Platforms\$(Platform)\PlatformToolsets\v145')">v145</PlatformToolset>
+    <PlatformToolset Condition="!Exists('$(VCTargetsPath)Platforms\$(Platform)\PlatformToolsets\v145')">v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
