@@ -1,5 +1,7 @@
 # BatchRename
 
+[![CI](https://github.com/ADMA200/BatchRename/actions/workflows/ci.yml/badge.svg)](https://github.com/ADMA200/BatchRename/actions/workflows/ci.yml)
+
 Windows 11 资源管理器里的批量重命名工具。选中一批文件 → 右键 → 实时预览新旧对照 → 执行。
 
 改名前能看见每一项会变成什么，改完能一键撤回。

@@ -2253,6 +2253,18 @@ ie4uinit.exe -show
 > 按时间**倒序**排列，最新的在最前。编号在各版本内独立。
 > 正文里的 `🔧 vX.Y` 标注指向这里的对应条目。
 
+## v1.14 补充（2026-11-02：CI 首次运行暴露的工具集问题）
+
+仓库公开后第一次 `build-and-test` 就红了，红在 v1.13 新加的「编译原生 Shell」步骤上——这正说明那一步有用：前三步全绿，问题只在真机上才会显形。
+
+| # | 位置 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | `BatchRename.Shell.vcxproj` | `<PlatformToolset>v145</PlatformToolset>` 写死 VS2026 工具集；`windows-latest` 是 VS2022（17.14）+ MSVC v143 → `msbuild` 报 MSB8020「找不到 v145 的构建工具」，退出码 1 | 改成按已安装情况挑：`Exists('$(VCTargetsPath)Platforms\$(Platform)\PlatformToolsets\v145')` 为真用 v145，否则 v143。本机 `-getProperty:PlatformToolset` 仍解析成 v145，编译 0 警告 |
+| 2 | `README.md` | 公开仓库看不出构建状态 | 顶部加 CI 徽章 |
+| 3 | `docs/RELEASE-NOTES.md` | v1.0.0 说明已作为 Release 发布，仓库内再存一份会双维护 | 删除 |
+
+> 判据：报错是 cmd 的 **退出码 1** 而不是 9009，说明 `msbuild` 在 PATH 里、是编译本身失败的，不是命令找不到。
+
 ## v1.13 补充（2026-11-02：工程化收尾，准备开源）
 
 代码没有死代码（唯一的"只出现一次"都是 COM 接口实现、P/Invoke 结构体字段和入口点）。这轮清的是重复声明、版本双真源和公开前的痕迹。
