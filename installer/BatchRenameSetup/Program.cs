@@ -32,8 +32,12 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // 文件夹选择对话框需要视觉样式，否则是老式外观
+        System.Windows.Forms.Application.EnableVisualStyles();
+        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
+
         // 静默模式：不弹任何对话框，日志写 %LOCALAPPDATA%\BatchRename\setup.log，用退出码表达成败。
-        // 用于自动化验证与批处理部署。
+        // 用于自动化验证与批处理部署。路径可用 --dir 指定。
         var silent = args.Any(a => a.Equals("/S", StringComparison.OrdinalIgnoreCase)
                                 || a.Equals("--silent", StringComparison.OrdinalIgnoreCase));
         var logPath = Path.Combine(
@@ -66,12 +70,15 @@ internal static class Program
                 return 1;
             }
 
-            var appRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "BatchRename", "app");
+            var appRoot = GetTargetDirFromArgs(args) ?? DefaultRoot;
 
             if (!silent)
             {
+                // 先让用户选目录（默认 %LOCALAPPDATA%\BatchRename\app）
+                var picked = PickFolder(appRoot);
+                if (picked is null) return 0;   // 用户取消
+                appRoot = picked;
+
                 var answer = MessageBoxW(IntPtr.Zero,
                     $"将安装到：\n{appRoot}\n\n" +
                     "安装后不要移动该目录（稀疏包按绝对路径注册）。\n\n继续？",
@@ -137,6 +144,49 @@ internal static class Program
                     AppName + " 安装程序", MB_OK | MB_ICONERROR);
             }
             return 1;
+        }
+    }
+
+    private static string DefaultRoot => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "BatchRename", "app");
+
+    /// <summary>静默模式支持 --dir &lt;路径&gt;，便于装到指定位置。</summary>
+    private static string? GetTargetDirFromArgs(string[] args)
+    {
+        for (var i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals("--dir", StringComparison.OrdinalIgnoreCase))
+            {
+                var v = args[i + 1].Trim('"');
+                return string.IsNullOrWhiteSpace(v) ? null : Path.GetFullPath(v);
+            }
+        }
+        return null;
+    }
+
+    private static string? PickFolder(string initial)
+    {
+        try
+        {
+            using var dlg = new System.Windows.Forms.FolderBrowserDialog
+            {
+                Description = "选择安装位置（安装后请不要移动该目录）",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true
+            };
+
+            // InitialDirectory 为空时交给系统默认
+            var start = Directory.Exists(initial)
+                ? initial
+                : Path.GetDirectoryName(initial) is { } parent && Directory.Exists(parent) ? parent : null;
+            if (start is not null) dlg.InitialDirectory = start;
+
+            return dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK ? dlg.SelectedPath : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
