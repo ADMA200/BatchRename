@@ -2292,3 +2292,11 @@ ie4uinit.exe -show
 - 不含可编译工程。所有 C#/C++ 片段是**契约级**（接口签名、状态机、关键循环），抄进去还要补 using、命名空间和错误处理。
 - 所有 `[判断]` 结论必须在 Windows 上实测。特别是：`IFileOperation` 对仅大小写改名的内部处理、`ThreadingModel="Both"` 的实际行为、`ms-settings:personalization-contextmenu` 这个 slug 是否有效。
 - 26H2 的右键菜单仍在灰度推送（Controlled Feature Rollout），不同机器同一 build 的菜单形态可能不同。验收时以自己机器的实际行为为准，不要拿别人的截图对照。
+
+## v1.10 补充（2026-11-01：跨位置安装 + 单文件安装器）
+
+| # | 位置 | 问题 | 更正 |
+|---|---|---|---|
+| 1 | §6.2 安装 | 旧包处理只看 `Identity`/`Publisher` | **还要看安装位置**。稀疏包绑死绝对路径，从 `E:\Project\...\packaging` 装过的包不能直接从 `%LOCALAPPDATA%\...\packaging` 重注册，会报 `0x80073D0B`（"无法移动，因为该程序包正被使用或安装在其它外部位置"）。脚本现在比较 `Get-AppxPackage.InstallLocation` 与清单目录 |
+| 2 | §6.2 安装 | 卸载前不停进程 | `Remove-AppxPackage` 在 dllhost 加载着 Shell DLL 时会报 `0x80073D02`。卸载前必须先停 App 进程 + 按模块名过滤停 dllhost |
+| 3 | §6.2 分发 | 只有 zip + 脚本 | 新增 `tools/Build-Setup.ps1`：把 payload 内嵌进一个自包含单文件 exe（约 96MB），双击即装、写「应用和功能」条目、支持 `/S` 静默模式 |

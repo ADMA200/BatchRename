@@ -59,18 +59,48 @@ if (Test-Path $headerPath) {
     Write-Host "[ok] CLSID consistent across manifest and header" -ForegroundColor Green
 }
 
-# --- 1. 旧包处理：Publisher 或 Identity 变了都必须先卸载（否则 0x80073CFB） ---
+# --- 1. 旧包处理：身份或**安装位置**变了都必须先卸载（否则 0x80073D0B / 0x80073CFB） ---
 $newPublisher = $manifest.Package.Identity.Publisher
 $newName      = $manifest.Package.Identity.Name
+$manifestDir  = [IO.Path]::GetFullPath((Split-Path -Parent $manifestPath)).TrimEnd('\')
 
 # 按前缀找历史安装：Identity 改名后旧包的名字不同，只按当前名找会漏掉
 $existing = @(Get-AppxPackage -Name 'BatchRename*' -ErrorAction SilentlyContinue)
 foreach ($old in $existing) {
+    $needRemove = $false
+    $reason = ''
+
     if ($old.Publisher -ne $newPublisher -or $old.Name -ne $newName) {
-        Write-Host "[warn] 旧包与清单身份不一致，先卸载：$($old.PackageFullName)" -ForegroundColor Yellow
-        Write-Host "       (Name: $($old.Name) -> $newName ; Publisher: $($old.Publisher) -> $newPublisher)" -ForegroundColor DarkGray
-        Remove-AppxPackage -Package $old.PackageFullName -ErrorAction Stop
+        $needRemove = $true
+        $reason = "身份不一致 (Name: $($old.Name) -> $newName ; Publisher: $($old.Publisher) -> $newPublisher)"
     }
+    elseif ($old.InstallLocation) {
+        # 稀疏包绑死绝对路径：从 A 目录装过的包不能直接从 B 目录重注册（0x80073D0B）
+        $oldDir = [IO.Path]::GetFullPath($old.InstallLocation).TrimEnd('\')
+        if ($oldDir -ne $manifestDir) {
+            $needRemove = $true
+            $reason = "安装位置变了 ($oldDir -> $manifestDir)"
+        }
+    }
+
+    if (-not $needRemove) { continue }
+
+    Write-Host "[warn] 先卸载旧包：$reason" -ForegroundColor Yellow
+
+    # 卸载前必须释放占用：App 进程 + 加载了 Shell DLL 的 dllhost，
+    # 否则 Remove-AppxPackage 报 0x80073D02（包正在使用中）
+    Get-Process -Name 'BatchRename.App' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name dllhost -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($_.Modules | Where-Object { $_.ModuleName -like 'BatchRename*' }) {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    Start-Sleep -Milliseconds 500
+
+    Remove-AppxPackage -Package $old.PackageFullName -ErrorAction Stop
+    Write-Host "[ok] 已卸载 $($old.PackageFullName)" -ForegroundColor Green
 }
 
 # --- 1.5 同步图标资产到运行时目录 ---

@@ -121,6 +121,21 @@ dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRe
 
 zip 内的「安装说明.txt」有完整步骤，包含"菜单没出现怎么办"。
 
+### 打成单个 exe
+
+```powershell
+.\tools\Build-Setup.ps1
+```
+
+产出 `dist\BatchRename-Setup-<日期>.exe`（约 96MB，**自带 .NET 运行时**）。拷过去双击即可，不用解压、不用先装运行时。
+
+- 安装位置：`%LOCALAPPDATA%\BatchRename\app\<日期>\`
+- 会写入「应用和功能」条目，卸载走那里即可
+- 静默安装：`BatchRenameSetup.exe /S`（退出码 0 = 成功，日志在 `%LOCALAPPDATA%\BatchRename\setup.log`）
+
+> 为什么不做 MSIX：真 MSIX 需要签名证书，自签证书在目标机必须被信任，否则报 `0x800B0109`。
+> 对"拷一台机器过去双击装好"的场景，那一步比现在更麻烦。
+
 ## 目录结构
 
 ```

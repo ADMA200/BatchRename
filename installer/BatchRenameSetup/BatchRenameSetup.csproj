@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <AssemblyName>BatchRenameSetup</AssemblyName>
+    <RootNamespace>BatchRename.Setup</RootNamespace>
+    <ApplicationIcon>..\..\src\BatchRename.App\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>批量重命名</Product>
+    <AssemblyTitle>批量重命名 安装程序</AssemblyTitle>
+  </PropertyGroup>
+
+  <!--
+    payload.zip 由 tools/Build-Setup.ps1 在编译前生成（内容即 Package-Portable 的产物）。
+    用 EmbeddedResource 而不是复制到输出目录，才能保证最终是"单个 exe"。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="payload.zip" Condition="Exists('payload.zip')">
+      <LogicalName>payload.zip</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
