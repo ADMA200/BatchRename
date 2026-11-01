@@ -109,17 +109,23 @@ internal static class Program
                 return 1;
             }
 
-            var appRoot = GetTargetDirFromArgs(args) ?? DefaultRoot;
+            var parent = GetTargetDirFromArgs(args) ?? DefaultParent;
 
             if (!silent)
             {
-                // 先让用户选目录（默认 %LOCALAPPDATA%\BatchRename\app）
-                var picked = PickFolder(appRoot);
+                // 让用户选「父目录」，实际装到其下的 BatchRename 子目录
+                var picked = PickFolder(parent);
                 if (picked is null) return 0;   // 用户取消
-                appRoot = picked;
+                parent = picked;
+            }
 
+            var appRoot = Path.Combine(parent, InstallDirName);
+
+            if (!silent)
+            {
                 var answer = MessageBoxW(IntPtr.Zero,
                     $"将安装到：\n{appRoot}\n\n" +
+                    "（只会在所选目录下新建 BatchRename 子目录，不会动其它文件）\n\n" +
                     "安装后不要移动该目录（稀疏包按绝对路径注册）。\n\n继续？",
                     AppName + " 安装程序", MB_YESNO | MB_ICONQUESTION);
 
@@ -195,9 +201,16 @@ internal static class Program
         }
     }
 
-    private static string DefaultRoot => Path.Combine(
+    /// <summary>
+    /// 用户选的是"父目录"，实际安装到其下的 BatchRename 子目录。
+    /// ⚠ 绝不能把选中的目录本身当安装目录并递归删除 ——
+    ///   用户很可能选的是 E:\Program 这种放着一堆软件的地方，删掉就是事故。
+    /// </summary>
+    private const string InstallDirName = "BatchRename";
+
+    private static string DefaultParent => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "BatchRename", "app");
+        "BatchRename");
 
     /// <summary>静默模式支持 --dir &lt;路径&gt;，便于装到指定位置。</summary>
     private static string? GetTargetDirFromArgs(string[] args)
@@ -289,7 +302,23 @@ internal static class Program
 
     private static string Extract(string appRoot)
     {
-        if (Directory.Exists(appRoot)) Directory.Delete(appRoot, recursive: true);
+        if (Directory.Exists(appRoot))
+        {
+            // 双保险：只删「确认属于本程序」的目录。
+            // 判据 = 里面有 tools\Install-Sparse.ps1（我们自己的标记）；
+            // 空目录可删；其它情况一律拒绝，绝不能重复"把用户选的目录整个删掉"这种事。
+            var marker = Path.Combine(appRoot, "tools", "Install-Sparse.ps1");
+            var isEmpty = !Directory.EnumerateFileSystemEntries(appRoot).Any();
+
+            if (!isEmpty && !File.Exists(marker))
+            {
+                throw new InvalidOperationException(
+                    $"目标目录已存在，且不是本程序的安装目录：\n{appRoot}\n\n" +
+                    "为避免误删，安装已停止。请换一个位置，或先手动处理该目录。");
+            }
+
+            Directory.Delete(appRoot, recursive: true);
+        }
         Directory.CreateDirectory(appRoot);
 
         using var res = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip")
