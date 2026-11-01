@@ -117,7 +117,9 @@ $zipPath = Join-Path $OutputDir "BatchRename-$stamp.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
 Write-Host '[..] Compressing' -ForegroundColor Cyan
-Compress-Archive -Path $stage -DestinationPath $zipPath -CompressionLevel Optimal
+# 压缩时不带 BatchRename-<日期> 这一层：解压出来直接就是 bin\ / packaging\ / tools\
+# （安装器会把内容解到 <所选目录>\BatchRename，多一层会变成 BatchRename\BatchRename-20261101\）
+Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -CompressionLevel Optimal
 
 $sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host ''

@@ -329,9 +329,15 @@ internal static class Program
         return appRoot;
     }
 
-    /// <summary>payload 里有一层 BatchRename-yyyymmdd 目录，取出来当根。</summary>
+    /// <summary>
+    /// 找到包的根（含 tools 的那一层）。
+    /// 新格式：内容直接解在根下（zip 里不再有 BatchRename-日期 这层）；
+    /// 旧格式：多一层 BatchRename-yyyymmdd，兼容处理。
+    /// </summary>
     private static string FindPackageRoot(string stage)
     {
+        if (Directory.Exists(Path.Combine(stage, "tools"))) return stage;
+
         var dirs = Directory.GetDirectories(stage);
         var withTools = dirs.FirstOrDefault(d => Directory.Exists(Path.Combine(d, "tools")));
         return withTools ?? stage;
