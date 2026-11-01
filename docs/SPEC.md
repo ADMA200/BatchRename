@@ -48,7 +48,7 @@ v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是�
 | 5 | §5.2 | `GetIcon` 返回 `exe路径,0` | 改返回独立的 **`Assets\menu.ico`**。exe 图标受 Shell 图标缓存影响，替换后菜单可能长期显示旧图，且无法把菜单图标与应用图标分开设计 |
 | 6 | §7.6 | Mutex 名 `Local\BatchRename.SingleInstance.{PackageFamilyName}` | 应用由 Shell `CreateProcess` 启动，`Package.Current` 不可用，改固定名 |
 | 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（见 REVIEW §11 对标实测） |
-| 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。需提供 `altform-unplated` 变体 |
+| 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。<br>🔧 **v1.9 更正**：`altform-unplated` 变体**实测未被采纳**（44/150/50 全套生成后仍带底板）。真正的解法是 `AppWindow.SetIcon()`，见 §6.1 |
 
 ## v1.4 补充（M3 遗留项回补）
 
@@ -2097,7 +2097,7 @@ M1 卡住时的排障顺序（别乱猜）：
 
 > **M4 期间的两个认知修正**：
 > ① Mica 不是"整窗糊一层半透明"——内容区要不要叠填充层取决于要不要分层，叠了反而出现色块分界；
-> ② 包图标在任务栏会被垫「强调色底板」（plating），必须提供 `altform-unplated` 变体。
+> ② 包图标在任务栏会被垫「强调色底板」（plating）。🔧 **v1.9**：`altform-unplated` 变体无效，正确解法是 `AppWindow.SetIcon(ico 绝对路径)`——显式设窗口图标后，任务栏不再回落到包 logo，底板自动消失。⚠ 不能传 exe 路径（会挑到 .NET 默认图标）。
 
 ### M5 —— 安装闭环 + 兜底入口（已完成，2026-11-01）
 

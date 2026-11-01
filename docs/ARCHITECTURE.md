@@ -174,7 +174,22 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
 | exe / 窗口 | `app.ico`（csproj 的 `ApplicationIcon`） | 需重新 build，且受 Shell 图标缓存影响，可能要重启 explorer |
 | 任务栏 / 开始菜单 | 包的 `VisualElements` logo | 需 `Add-AppxPackage -Register` 重新注册（注册前要停净 App 与 dllhost，否则 `0x80073D02`） |
 
-任务栏这条还有个坑：只给默认 logo 时，系统会垫一块**强调色底板**（plating），圆角外露出 accent color。必须额外提供 `*.targetsize-*_altform-unplated.png` 变体。
+任务栏这条还有个坑：只给默认 logo 时，系统会垫一块**强调色底板**（plating），圆角外露出 accent color。
+
+> 🔧 **v1.9 实测更正：补 `altform-unplated` 变体没用**
+>
+> 生成 `*.targetsize-44_altform-unplated.png` / `altform-lightunplated` 全套并重新注册后，任务栏**仍然带底板**——系统不会因为变体存在就改用无底板渲染。
+>
+> **真正有效的解法是设窗口图标**：
+>
+> ```csharp
+> var ico = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Assets", "menu.ico"));
+> AppWindow.SetIcon(ico);
+> ```
+>
+> 任务栏按钮和 Alt+Tab 优先用**窗口图标**，只有窗口从未设过图标时才回落到包 logo。走了后者才会 plating。
+>
+> ⚠ **不要传 exe 路径**：`SetIcon(Environment.ProcessPath)` 会让 Shell 在 exe 的图标资源里自己挑，实测挑到了 .NET 的默认文档图标（因为 exe 里除了嵌入的 `app.ico` 还有运行时资源）。必须传独立的 ico 文件，没有索引歧义。
 
 ## 6. 关键决策
 

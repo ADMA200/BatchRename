@@ -48,6 +48,17 @@ public sealed partial class MainWindow : Window
         }
         catch { }
 
+        // 任务栏 / Alt+Tab 的图标：显式设窗口图标。
+        // ⚠ 不能传 exe 路径：那样 Shell 会在 exe 的图标资源里挑，实测挑到了 .NET 默认的文档图标。
+        //   直接给 ico 文件的绝对路径，没有索引歧义。
+        // 路径：exe 在 bin\publish\BatchRename.App\，图标在 bin\publish\Assets\
+        try
+        {
+            var ico = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Assets", "menu.ico"));
+            if (File.Exists(ico)) AppWindow.SetIcon(ico);
+        }
+        catch { }
+
         // AppWindow.Resize 收的是**物理像素**，不做 DPI 换算：
         // 150% 缩放下直接给 1180×720，实际只有 787×480 DIP，窗口明显偏小（REVIEW P2-16）
         try
