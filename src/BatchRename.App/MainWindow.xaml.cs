@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using BatchRename.App.Core;
 using BatchRename.App.Models;
+using BatchRename.App.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -14,8 +15,12 @@ public sealed partial class MainWindow : Window
 {
     private List<RenameItem> _items = new();
     private readonly DispatcherQueueTimer _debounce;
+    private readonly DispatcherQueueTimer _diskDebounce;
     private UndoJournal? _lastJournal;
     private bool _busy;
+
+    /// <summary>程序性改「全选」勾选状态时置位，避免反过来把列表全勾/全清。</summary>
+    private bool _syncingSelectAll;
 
     /// <summary>执行/撤销后的结果文案。非空时底栏优先显示它，不被预览统计覆盖。</summary>
     private string? _resultMessage;
@@ -42,17 +47,34 @@ public sealed partial class MainWindow : Window
         }
         catch { }
 
-        try { AppWindow.Resize(new Windows.Graphics.SizeInt32(1180, 720)); } catch { }
+        // AppWindow.Resize 收的是**物理像素**，不做 DPI 换算：
+        // 150% 缩放下直接给 1180×720，实际只有 787×480 DIP，窗口明显偏小（REVIEW P2-16）
+        try
+        {
+            var scale = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0;
+            if (scale <= 0) scale = 1.0;
+            AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(1180 * scale), (int)(720 * scale)));
+        }
+        catch { }
 
         // handledEventsToo = true：Space 会被 ListView 自己吃掉，必须在已处理阶段也能收到
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnRootKeyDown), handledEventsToo: true);
 
+        // 规格书 §8.11 两层防抖：
+        //   第一层 150ms —— 只跑文本规则 + 批内互撞/环（纯内存，敲字即刷新）
+        //   第二层 400ms —— 停手后才做磁盘存在性检查（要枚举目录，慢盘/网络盘上是秒级）
         _debounce = DispatcherQueue.CreateTimer();
         _debounce.Interval = TimeSpan.FromMilliseconds(150);
         _debounce.IsRepeating = false;
-        _debounce.Tick += (_, _) => RefreshPreview();
+        _debounce.Tick += (_, _) => RefreshPreview(checkDisk: false);
+
+        _diskDebounce = DispatcherQueue.CreateTimer();
+        _diskDebounce.Interval = TimeSpan.FromMilliseconds(400);
+        _diskDebounce.IsRepeating = false;
+        _diskDebounce.Tick += (_, _) => RefreshPreview(checkDisk: true);
 
         LoadItems(payload);
+        RestoreLastJournal();
 
         // 崩溃恢复检查要等 XamlRoot 就绪
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low,
@@ -60,7 +82,7 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>规格书 §7.5 键盘。</summary>
-    private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
+    private async void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
     {
         switch (e.Key)
         {
@@ -73,12 +95,15 @@ public sealed partial class MainWindow : Window
                 break;
 
             case VirtualKey.Escape:
-                Close();
+                // 🔧 有"算好但没执行"的改动时先确认，别让一个误触把整批规则白敲
+                if (HasPendingChanges()) await ConfirmCloseAsync();
+                else Close();
                 e.Handled = true;
                 break;
 
             case VirtualKey.A when IsCtrlDown():
                 foreach (var item in _items) item.IsEnabled = true;
+                SyncSelectAllBox();
                 _resultMessage = null;
                 QueueRefresh();
                 e.Handled = true;
@@ -88,6 +113,7 @@ public sealed partial class MainWindow : Window
                 if (ItemList.SelectedItem is RenameItem sel)
                 {
                     sel.IsEnabled = !sel.IsEnabled;
+                    SyncSelectAllBox();
                     _resultMessage = null;
                     QueueRefresh();
                     e.Handled = true;
@@ -100,6 +126,27 @@ public sealed partial class MainWindow : Window
         Microsoft.UI.Input.InputKeyboardSource
             .GetKeyStateForCurrentThread(VirtualKey.Control)
             .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    /// <summary>有未执行改动时，Esc/关闭前问一句。</summary>
+    private async Task ConfirmCloseAsync()
+    {
+        var pending = _items.Count(i => i.IsEnabled && i.State is ItemState.Ok or ItemState.Warning);
+        var dlg = new ContentDialog
+        {
+            Title = "还有未执行的改名",
+            Content = $"当前有 {pending} 项改动尚未执行，关闭窗口就会丢弃。\n" +
+                      "已经改过的部分仍可以用「撤销」或资源管理器的 Ctrl+Z 回退。",
+            PrimaryButtonText = "关闭",
+            CloseButtonText = "继续编辑",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = Content.XamlRoot
+        };
+
+        if (await dlg.ShowAsync() == ContentDialogResult.Primary) Close();
+    }
 
     /// <summary>第二个实例转发过来的路径：替换列表，不新建窗口。</summary>
     public void UpdateFromPaths(IReadOnlyList<string> paths)
@@ -137,6 +184,36 @@ public sealed partial class MainWindow : Window
         _items = RenameEngine.CreateItems(paths);
         ItemList.ItemsSource = _items;
         RefreshPreview();
+    }
+
+    /// <summary>
+    /// 启动时把上一次的 journal 挂回来：关掉软件再打开，「撤销」按钮仍然可用。
+    /// 只认 Applied —— Pending 由 CheckPendingJournalAsync 单独处理。
+    /// </summary>
+    private void RestoreLastJournal()
+    {
+        try
+        {
+            if (UndoJournal.LoadLast() is { State: JournalState.Applied } last)
+            {
+                _lastJournal = last;
+                UndoButton.IsEnabled = true;
+            }
+        }
+        catch
+        {
+            // 记录损坏不影响启动
+        }
+    }
+
+    /// <summary>主窗口句柄，交给 IFileOperation 当 owner（UAC 提示框、Shell 错误框要靠它）。</summary>
+    private IntPtr WindowHandle
+    {
+        get
+        {
+            try { return WinRT.Interop.WindowNative.GetWindowHandle(this); }
+            catch { return IntPtr.Zero; }
+        }
     }
 
     /// <summary>
@@ -193,11 +270,17 @@ public sealed partial class MainWindow : Window
 
     private void OnRuleChanged(object sender, SelectionChangedEventArgs e) => OnUserRuleChanged();
 
-    private void OnItemEnabledChanged(object sender, RoutedEventArgs e) => OnUserRuleChanged();
+    private void OnItemEnabledChanged(object sender, RoutedEventArgs e)
+    {
+        SyncSelectAllBox();
+        OnUserRuleChanged();
+    }
 
     /// <summary>全选 / 全不选（规格书 §7.4 底栏）。</summary>
     private void OnSelectAllChanged(object sender, RoutedEventArgs e)
     {
+        // 程序性同步（_syncingSelectAll）与"部分选中"（null）都不要反过来改列表
+        if (_syncingSelectAll || SelectAllBox.IsChecked is null) return;
         if (_items.Count == 0) return;
 
         var on = SelectAllBox.IsChecked == true;
@@ -220,6 +303,23 @@ public sealed partial class MainWindow : Window
         if (_items.Count == 0 || _busy) return;
         _debounce.Stop();
         _debounce.Start();
+        _diskDebounce.Stop();
+        _diskDebounce.Start();
+    }
+
+    /// <summary>有没有"已经算好但还没执行"的改动（Esc 关闭前用它决定要不要二次确认）。</summary>
+    private bool HasPendingChanges() =>
+        _items.Any(i => i.IsEnabled && i.State is ItemState.Ok or ItemState.Warning);
+
+    /// <summary>把「全选」复选框同步成列表的真实状态（全选 / 全不选 / 部分选中）。</summary>
+    private void SyncSelectAllBox()
+    {
+        if (_items.Count == 0) return;
+
+        var enabled = _items.Count(i => i.IsEnabled);
+        _syncingSelectAll = true;
+        SelectAllBox.IsChecked = enabled == 0 ? false : enabled == _items.Count ? true : null;
+        _syncingSelectAll = false;
     }
 
     private RenameRule BuildRule() => new()
@@ -243,7 +343,7 @@ public sealed partial class MainWindow : Window
         }
     };
 
-    private void RefreshPreview()
+    private void RefreshPreview(bool checkDisk = true)
     {
         if (_items.Count == 0)
         {
@@ -253,7 +353,7 @@ public sealed partial class MainWindow : Window
         }
 
         var sw = Stopwatch.StartNew();
-        var outcome = RenameEngine.Run(_items, BuildRule(), AutoNumberBox.IsChecked == true);
+        var outcome = RenameEngine.Run(_items, BuildRule(), AutoNumberBox.IsChecked == true, checkDisk);
         sw.Stop();
 
         SetError(outcome.RegexError is not null ? "正则无效：" + outcome.RegexError : null);
@@ -264,7 +364,8 @@ public sealed partial class MainWindow : Window
 
         // 执行/撤销后优先显示结果文案，别被预览统计冲掉
         FooterText.Text = _resultMessage
-            ?? $"共 {_items.Count} 项 · 将改名 {willRename} · 无效 {invalid} · 冲突 {conflicts} · 引擎 {sw.ElapsedMilliseconds}ms";
+            ?? $"共 {_items.Count} 项 · 将改名 {willRename} · 无效 {invalid} · 冲突 {conflicts} · 引擎 {sw.ElapsedMilliseconds}ms"
+               + (checkDisk || willRename == 0 ? "" : " · 磁盘校验中…");
 
         ExecuteButton.IsEnabled = !_busy && !outcome.HasBlockingError && willRename > 0;
     }
@@ -301,6 +402,11 @@ public sealed partial class MainWindow : Window
     {
         if (_busy) return;
 
+        // 先吃掉还在防抖窗口里的最后一次输入：否则打完字 150ms 内点「执行」，
+        // 用的还是上一轮规则算出来的名字（REVIEW P2-9）
+        _debounce.Stop();
+        RefreshPreview();
+
         var targets = _items
             .Where(i => i.IsEnabled && i.State is ItemState.Ok or ItemState.Warning)
             .ToList();
@@ -332,7 +438,9 @@ public sealed partial class MainWindow : Window
         try
         {
             var runner = new FileOperationRunner();
-            var result = await runner.RunAsync(targets);
+            // AddUndoRecord: true —— 整批登记到资源管理器撤销栈，关掉本程序后 Ctrl+Z 仍然有效
+            var result = await runner.RunAsync(
+                targets, new RenameRunOptions(WindowHandle, AddUndoRecord: true));
 
             // 规格书 §8.10.2：state=Applied 时必须带上逐项真实结果。
             // 不回写的话，失败项在 journal 里仍标记为 Ok=true，
@@ -346,7 +454,6 @@ public sealed partial class MainWindow : Window
 
             journal.State = JournalState.Applied;
             journal.Save();
-            UndoJournal.Prune();
             _lastJournal = journal;
 
             _resultMessage = result.Failed == 0
@@ -363,11 +470,12 @@ public sealed partial class MainWindow : Window
                 SetError(null);
             }
 
-            // 列表切到执行后的真实路径，并清空规则（避免又显示成"要再改一次"）
-            _settingText = true;
-            FindBox.Text = "";
-            ReplaceBox.Text = "";
-            _settingText = false;
+            // 🔧 回归修复：执行后**不再清空**查找/替换框。
+            // v1.4 清空是为了"避免又显示成要再改一次"，但那建立在"改过的项被锁定"的前提上；
+            // P1-7 之后已改名项照常参与规则计算，清空只会把用户刚输入的内容丢掉——
+            // 失败项无法直接重试，想再套一轮规则也得从头敲。
+            // 规则留着时：已改名项若不再命中规则会回显「已改名」（RenameEngine.Run 末尾），
+            // 若仍然命中就如实显示"还会再改一次"，由用户自己决定要不要按执行。
 
             // 保留全部项：只把成功的项就地换成新路径并标记「已改名」，其余原样留着
             RemapItems(journal.Entries, markRenamed: true);
@@ -383,6 +491,28 @@ public sealed partial class MainWindow : Window
                     FooterText.Text = msg;
                 });
             }
+        }
+        catch (Exception ex)
+        {
+            // 🔧 P0-3：这里原来是裸 async void —— 任何异常都会冒到 DispatcherQueue，
+            // WinUI 3 会直接终止进程（没有对话框、没有日志），同时 journal 永远停在 Pending。
+            // 现在：按磁盘现状回写逐项 ok，保住"做过哪几步"的证据，并让窗口活下来。
+            AppLog.Error($"执行失败 ({journal.Entries.Count} 项, {journal.RuleSummary})", ex);
+
+            try
+            {
+                journal.ReconcileFromDisk();
+                journal.Error = ex.GetType().Name + ": " + ex.Message;
+                journal.Save();          // State 仍是 Pending → 下次启动提示回滚
+            }
+            catch (Exception saveEx)
+            {
+                AppLog.Error("异常回写 journal 失败", saveEx);
+            }
+
+            _resultMessage = "执行中断：" + ex.Message;
+            FooterText.Text = _resultMessage;
+            SetError("执行中断：" + ex.Message + "（已完成的部分会在下次启动时提示回滚）");
         }
         finally
         {
@@ -407,21 +537,33 @@ public sealed partial class MainWindow : Window
             }
 
             var parts = new List<string> { $"已撤销 {outcome.Undone} 项" };
+            if (outcome.AlreadyUndone > 0) parts.Add($"{outcome.AlreadyUndone} 项已是原名");
             if (outcome.Invalid > 0) parts.Add($"{outcome.Invalid} 项已失效");
             if (outcome.Failed > 0) parts.Add($"{outcome.Failed} 项失败");
             _resultMessage = string.Join("，", parts);
 
-            if (outcome.Invalid > 0 || outcome.Failed > 0)
+            if (outcome.Failed > 0)
             {
-                SetError("部分项目未能回滚（可能已被移动或占用）");
+                // 部分失败：记录留在 Applied，允许再点一次（已回滚的项会被自动跳过）
+                SetError("部分项目未能回滚（可能被占用或已移动），可以再点一次「撤销」重试");
+            }
+            else if (outcome.Invalid > 0)
+            {
+                SetError("部分项目已失效（可能已被改名或删除）");
             }
 
             RemapItems(journal.Entries, markRenamed: false);
+
+            // 只有全部回滚到位才丢掉这条记录
+            if (outcome.Completed) _lastJournal = null;
+        }
+        catch (Exception ex)
+        {
+            SetError("撤销失败：" + ex.Message);
         }
         finally
         {
-            _lastJournal = null;
-            UndoButton.IsEnabled = false;
+            // SetBusy(false) 会按 _lastJournal 的状态重新决定按钮是否可用
             SetBusy(false);
         }
     }
@@ -441,11 +583,14 @@ public sealed partial class MainWindow : Window
         if (pending is null) return;
 
         var okCount = pending.Entries.Count(e => e.Ok);
+        var detail = string.IsNullOrEmpty(pending.Error)
+            ? ""
+            : $"\n\n中断原因：{pending.Error}";
         var dlg = new ContentDialog
         {
             Title = "上次操作可能未完成",
             Content = $"发现一个未完成的改名批次（{okCount} 项，{pending.CreatedUtc.ToLocalTime():MM-dd HH:mm}）。\n" +
-                      "回滚可以把它恢复到执行前的名字。",
+                      "回滚可以把它恢复到执行前的名字。" + detail,
             PrimaryButtonText = $"回滚 {okCount} 项",
             CloseButtonText = "忽略",
             DefaultButton = ContentDialogButton.Primary,
@@ -456,16 +601,19 @@ public sealed partial class MainWindow : Window
 
         if (choice == ContentDialogResult.Primary)
         {
-            var outcome = await pending.UndoAsync();
+            // 旧版这里调的是 UndoAsync，而它对 Pending 明确定义为"拒绝"——
+            // 于是回滚按钮 100% 失败（REVIEW P0-2）。回滚走独立的入口。
+            var outcome = await pending.RollbackPendingAsync();
             FooterText.Text = outcome.Rejected
                 ? "回滚失败：" + outcome.RejectReason
-                : $"已回滚 {outcome.Undone} 项" + (outcome.Invalid > 0 ? $"，{outcome.Invalid} 项已失效" : "");
+                : $"已回滚 {outcome.Undone} 项"
+                  + (outcome.Invalid > 0 ? $"，{outcome.Invalid} 项已失效" : "")
+                  + (outcome.Failed > 0 ? $"，{outcome.Failed} 项失败（下次启动会再次提示）" : "");
         }
         else
         {
-            // 用户选择忽略 → 标记为已处理，下次不再提示
-            pending.State = JournalState.Undone;
-            pending.Save();
+            // 用户选择忽略 → 丢弃这条记录，下次不再提示
+            pending.Discard();
         }
     }
 }

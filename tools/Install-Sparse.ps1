@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     注册 BatchRename 稀疏包（免签 / 开发者模式路线）。
@@ -25,7 +25,10 @@ $externalPath = (Resolve-Path $externalPath).Path
 $manifestPath = (Resolve-Path $manifestPath).Path
 
 # --- 0. 三处 CLSID 一致性自检（省掉 80% 的"菜单不出现"排障） ---
-[xml]$manifest = Get-Content $manifestPath -Raw
+# 注意：AppxManifest.xml 是无 BOM 的 UTF-8。Windows PowerShell 5.1 的 Get-Content
+# 默认按 ANSI（本机 GBK）解码，会把中文 DisplayName 读成乱码并吃掉引号，
+# 导致 [xml] 转换直接抛异常、脚本停在第 28 行。必须显式指定 -Encoding UTF8。
+[xml]$manifest = Get-Content $manifestPath -Raw -Encoding UTF8
 $ns = New-Object System.Xml.XmlNamespaceManager($manifest.NameTable)
 $ns.AddNamespace('f',  'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
 $ns.AddNamespace('com','http://schemas.microsoft.com/appx/manifest/com/windows10')
@@ -41,7 +44,7 @@ foreach ($v in $verbIds) {
 
 $headerPath = Join-Path $RepoRoot 'src\BatchRename.Shell\ExplorerCommand.h'
 if (Test-Path $headerPath) {
-    $header = Get-Content $headerPath -Raw
+    $header = Get-Content $headerPath -Raw -Encoding UTF8
     foreach ($id in $classIds) {
         if ($header -notmatch [regex]::Escape($id)) {
             throw "CLSID $id not found in ExplorerCommand.h (DECLSPEC_UUID must match manifest)"

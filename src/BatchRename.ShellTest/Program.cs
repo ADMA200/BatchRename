@@ -6,6 +6,11 @@ using BatchRename.App.Models;
 // 控制台默认 GBK，中文断言名会乱码
 try { Console.OutputEncoding = Encoding.UTF8; } catch { }
 
+// journal 现在只有一个固定文件（last-batch.json），测试必须把它指到临时目录，
+// 否则会覆盖用户真实的 last-batch.json。
+var testJournalRoot = Path.Combine(Path.GetTempPath(), "BatchRenameTestJournal", Guid.NewGuid().ToString("N")[..8]);
+UndoJournal.UseRootDirForTesting(testJournalRoot);
+
 // ============================================================
 // M2 引擎断言测试。不依赖 UI，可独立跑。
 // 用法: BatchRename.ShellTest.exe
@@ -224,7 +229,7 @@ Console.WriteLine("\n== 10. 执行器 + 撤销 journal（真实文件，临时�
 
         True("journal 已落盘", File.Exists(journal.FilePath));
         Eq("初始状态 Pending", JournalState.Pending, journal.State);
-        True("能被 LoadAll 读回", UndoJournal.LoadAll().Any(j => j.Id == journal.Id));
+        True("LoadLast 能读回且为 Pending", UndoJournal.LoadLast() is { State: JournalState.Pending });
 
         // --- 执行 ---
         var runner = new FileOperationRunner();
@@ -406,6 +411,16 @@ Console.WriteLine("\n== 14. 自动编号（§8.8 可选策略） ==");
         Eq("编号加在 Stem 尾部", "b (1).txt", items[0].NewName);
         Eq("编号提示文案", "自动编号 (1)", items[0].Message);
 
+        // 🔧 P1-5 回归：改扩展名时，编号必须加在**新**扩展名之前，且扩展名不能被老扩展名顶回去
+        //   旧实现用 item.Ext（改名前的老扩展名）反推 stem，会产出 "e.md (1).txt"
+        File.WriteAllText(Path.Combine(root, "e.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "e.md"), "x");     // 目标已存在 → 触发编号
+        var extChange = RenameEngine.CreateItems(new[] { Path.Combine(root, "e.txt") });
+        RenameEngine.Run(extChange,
+            new RenameRule { Find = "txt", Replace = "md", Scope = RenameScope.ExtOnly }, autoNumber: true);
+        Eq("改扩展名 + 编号：编号在新扩展名之前", "e (1).md", extChange[0].NewName);
+        Eq("改扩展名 + 编号：状态 Ok", ItemState.Ok, extChange[0].State);
+
         // 批内互撞：两个都改成 x.txt → 第一个保留原名，第二个 x (1).txt
         File.WriteAllText(Path.Combine(root, "c.txt"), "x");
         File.WriteAllText(Path.Combine(root, "d.txt"), "x");
@@ -444,27 +459,284 @@ Console.WriteLine("\n== 14. 自动编号（§8.8 可选策略） ==");
 
 Console.WriteLine("\n== 15. 崩溃恢复：Pending journal（§8.10.2） ==");
 {
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
     UndoJournal? pending = null;
+
     try
     {
+        // 造一个"改名已生效、但没来得及回写 Applied"的现场
+        var from = Path.Combine(root, "before.txt");
+        var to = Path.Combine(root, "after.txt");
+        File.WriteAllText(from, "x");
+        File.Move(from, to);
+
         pending = UndoJournal.Create("pending-test", new[]
         {
-            new JournalEntry { From = @"C:\nope\a.txt", To = @"C:\nope\b.txt", Ok = true }
+            new JournalEntry { From = from, To = to, Ok = true }
         });
         pending.Save();
         Eq("初始为 Pending", JournalState.Pending, pending.State);
 
         var found = UndoJournal.FindPending();
-        True("FindPending 能定位到它", found is not null && found.Id == pending.Id);
+        True("FindPending 能定位到它", found is not null);
+        True("FindPending 读回的状态是 Pending", found?.State == JournalState.Pending);
 
-        var outcome = await pending.UndoAsync();
-        True("Pending 批次拒绝撤销（需先回滚未完成）", outcome.Rejected, outcome.RejectReason);
+        var refused = await pending.UndoAsync();
+        True("普通撤销拒绝 Pending（语义正确）", refused.Rejected, refused.RejectReason);
+
+        // 🔧 旧版就是死在这里：崩溃恢复对话框调的是 UndoAsync，于是永远失败
+        var rollback = await pending.RollbackPendingAsync();
+        True("回滚未完成批次成功", !rollback.Rejected && rollback.Failed == 0, rollback.RejectReason);
+        Eq("回滚 1 项", 1, rollback.Undone);
+        True("原名已恢复", RenameEngine.ExistsExact(from));
+        True("新名已不存在", !RenameEngine.ExistsExact(to));
+        Eq("回滚后状态 Undone", JournalState.Undone, pending.State);
+        True("不再有 Pending 记录", UndoJournal.FindPending() is null);
     }
     finally
     {
-        try { if (pending is not null && File.Exists(pending.FilePath)) File.Delete(pending.FilePath); } catch { }
+        try { pending?.Discard(); } catch { }
+        try { Directory.Delete(root, true); } catch { }
     }
 }
+
+Console.WriteLine("\n== 16. 执行器：仅大小写改名（文件 + 目录，统一走 IFileOperation） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    var sub = Path.Combine(root, "lowerdir");
+    Directory.CreateDirectory(sub);
+    File.WriteAllText(Path.Combine(sub, "inside.txt"), "x");
+    var file = Path.Combine(root, "mixed.txt");
+    File.WriteAllText(file, "x");
+
+    try
+    {
+        var dirItem = RenameEngine.CreateItem(sub, true, FileAttributes.Directory);
+        var fileItem = RenameEngine.CreateItem(file, false, FileAttributes.Normal);
+        RenameEngine.Run(new[] { dirItem }, new RenameRule { CaseMode = CaseMode.Upper, Scope = RenameScope.StemOnly });
+        RenameEngine.Run(new[] { fileItem }, new RenameRule { CaseMode = CaseMode.Upper, Scope = RenameScope.StemOnly });
+
+        True("目录被标记 CaseOnly", dirItem.CaseOnly);
+        True("文件被标记 CaseOnly", fileItem.CaseOnly);
+
+        // 测试不登记到资源管理器撤销栈（AddUndoRecord: false），免得往用户 Ctrl+Z 里塞临时文件
+        var res = await new FileOperationRunner()
+            .RunAsync(new[] { dirItem, fileItem }, new RenameRunOptions(IntPtr.Zero, AddUndoRecord: false));
+
+        Eq("两项都成功（旧版目录那项必失败）", 2, res.Succeeded);
+        True("目录名已变成 LOWERDIR", RenameEngine.ExistsExact(Path.Combine(root, "LOWERDIR")));
+        True("目录里的文件完好", File.Exists(Path.Combine(root, "LOWERDIR", "inside.txt")));
+        True("文件名已变成 MIXED.txt", RenameEngine.ExistsExact(Path.Combine(root, "MIXED.txt")));
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 17. 异常中断：按磁盘现状回写 journal（P0-3） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        // 造"执行到一半崩了"的现场：第一项真的改名了，第二项没来得及
+        var doneFrom = Path.Combine(root, "one.txt");
+        var doneTo = Path.Combine(root, "ONE.txt");
+        File.WriteAllText(doneFrom, "x");
+        File.Move(doneFrom, doneTo);
+
+        var todoFrom = Path.Combine(root, "two.txt");
+        File.WriteAllText(todoFrom, "x");
+
+        var journal = UndoJournal.Create("crash-test", new[]
+        {
+            new JournalEntry { From = doneFrom, To = doneTo, Ok = true },
+            new JournalEntry { From = todoFrom, To = Path.Combine(root, "TWO.txt"), Ok = true }
+        });
+        journal.Save();
+        Eq("中断前逐项都是 Ok=true（还不可信）", 2, journal.Entries.Count(e => e.Ok));
+
+        journal.ReconcileFromDisk();
+
+        True("做过的那项仍是 Ok", journal.Entries[0].Ok);
+        True("没做的那项被改成 Ok=false", !journal.Entries[1].Ok);
+        Eq("状态仍为 Pending（下次启动提示回滚）", JournalState.Pending, journal.State);
+        journal.Discard();
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 18. 二次改名：已改名项照常参与规则计算（P1-7） ==");
+{
+    // 模拟"执行成功后被 RemapItems 标记过"的项：FullPath 已是改名后的路径
+    var item = Item(@"C:\t\OMEGA.txt");
+    item.IsRenamed = true;
+
+    // 规则为空时：不该冒出一个假的新名字，只回显「已改名」
+    RenameEngine.Run(new[] { item }, new RenameRule { Scope = RenameScope.StemOnly });
+    Eq("无规则时回显为已改名", ItemState.Renamed, item.State);
+    Eq("已改名文案", "已改名", item.Message);
+
+    // 有规则时：必须真的能再改一次（旧实现会一直卡在 Renamed）
+    RenameEngine.Run(new[] { item },
+        new RenameRule { Find = "OMEGA", Replace = "final", Scope = RenameScope.StemOnly, CaseMode = CaseMode.Upper });
+    Eq("二次改名产出新名字", "FINAL.txt", item.NewName);
+    Eq("二次改名状态 Ok（可执行）", ItemState.Ok, item.State);
+}
+
+Console.WriteLine("\n== 19. 链式改名：按依赖顺序入队，不许覆盖（P0-1 / P2-10） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        var a = Path.Combine(root, "a.txt");
+        var b = Path.Combine(root, "b.txt");
+        File.WriteAllText(a, "AAA");
+        File.WriteAllText(b, "BBB");
+
+        // 故意按"错序"放进列表：a→b 在 b→c 前面。
+        // 若执行器不排序，Shell 会先 a→b 静默覆盖 b.txt（BBB 消失），再 b→c 把覆盖后的文件挪走。
+        var toB = RenameEngine.CreateItem(a, false, FileAttributes.Normal);
+        toB.NewName = "b.txt";
+        toB.State = ItemState.Ok;
+
+        var toC = RenameEngine.CreateItem(b, false, FileAttributes.Normal);
+        toC.NewName = "c.txt";
+        toC.State = ItemState.Ok;
+
+        var res = await new FileOperationRunner()
+            .RunAsync(new[] { toB, toC }, new RenameRunOptions(IntPtr.Zero, AddUndoRecord: false));
+
+        Eq("链式两项都成功", 2, res.Succeeded);
+        True("a.txt 已不存在", !RenameEngine.ExistsExact(a));
+        True("b.txt 的内容来自 a（AAA）", File.Exists(b) && File.ReadAllText(b) == "AAA");
+        True("c.txt 的内容来自 b（BBB，没被覆盖）", File.Exists(Path.Combine(root, "c.txt")) &&
+             File.ReadAllText(Path.Combine(root, "c.txt")) == "BBB");
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 20. 批内循环改名：预览阶段拦掉（P0-1） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        var a = Path.Combine(root, "a.txt");
+        var b = Path.Combine(root, "b.txt");
+        File.WriteAllText(a, "AAA");
+        File.WriteAllText(b, "BBB");
+
+        // a↔b 互换：一条规则造不出来，直接构造出来喂给引擎的环检测
+        var swapA = RenameEngine.CreateItem(a, false, FileAttributes.Normal);
+        swapA.NewName = "b.txt";
+        swapA.State = ItemState.Ok;
+
+        var swapB = RenameEngine.CreateItem(b, false, FileAttributes.Normal);
+        swapB.NewName = "a.txt";
+        swapB.State = ItemState.Ok;
+
+        RenameEngine.MarkBatchCycles(new[] { swapA, swapB });
+        Eq("互换的第一项被判冲突", ItemState.ConflictInBatch, swapA.State);
+        Eq("互换的第二项被判冲突", ItemState.ConflictInBatch, swapB.State);
+        Eq("冲突文案", "批内循环改名", swapA.Message);
+
+        // 链不是环，不能误伤
+        var chainA = RenameEngine.CreateItem(a, false, FileAttributes.Normal);
+        chainA.NewName = "b.txt";
+        chainA.State = ItemState.Ok;
+        var chainB = RenameEngine.CreateItem(b, false, FileAttributes.Normal);
+        chainB.NewName = "c.txt";
+        chainB.State = ItemState.Ok;
+
+        RenameEngine.MarkBatchCycles(new[] { chainA, chainB });
+        Eq("链式改名第一项不算环", ItemState.Ok, chainA.State);
+        Eq("链式改名第二项不算环", ItemState.Ok, chainB.State);
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 21. 单项失败不中止整批（P2-10：逐项 HRESULT） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        var locked = Path.Combine(root, "locked.txt");
+        var free = Path.Combine(root, "free.txt");
+        File.WriteAllText(locked, "x");
+        File.WriteAllText(free, "x");
+
+        var lockedItem = RenameEngine.CreateItem(locked, false, FileAttributes.Normal);
+        lockedItem.NewName = "LOCKED.txt";
+        lockedItem.State = ItemState.Ok;
+
+        var freeItem = RenameEngine.CreateItem(free, false, FileAttributes.Normal);
+        freeItem.NewName = "FREE.txt";
+        freeItem.State = ItemState.Ok;
+
+        // 独占打开：改名必然失败（共享冲突），用来验证"逐项失败、其余继续"
+        using (var hold = new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var res = await new FileOperationRunner()
+                .RunAsync(new[] { lockedItem, freeItem }, new RenameRunOptions(IntPtr.Zero, AddUndoRecord: false));
+
+            Eq("被占用那项失败", 1, res.Failed);
+            Eq("另一项仍然成功", 1, res.Succeeded);
+            var err = res.Entries.First(e => !e.Ok).Error ?? "";
+            True($"失败原因已翻译成中文（{err}）", err.Contains("使用") || err.Contains("占用") || err.Contains("拒绝"));
+            True("成功项真的改了名", RenameEngine.ExistsExact(Path.Combine(root, "FREE.txt")));
+        }
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+Console.WriteLine("\n== 22. 两层防抖：第一层跳过磁盘检查（§8.11） ==");
+{
+    var root = Path.Combine(Path.GetTempPath(), "BatchRenameTest", Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "a.txt"), "x");
+        File.WriteAllText(Path.Combine(root, "b.txt"), "x");     // 目标已存在
+
+        var items = RenameEngine.CreateItems(new[] { Path.Combine(root, "a.txt") });
+        var rule = new RenameRule { Find = "a", Replace = "b", Scope = RenameScope.StemOnly };
+
+        var fast = RenameEngine.Run(items, rule, checkDisk: false);
+        True("第一层（不查磁盘）不标冲突", items[0].State != ItemState.ConflictOnDisk, items[0].State.ToString());
+        True("第一层不阻塞（按钮可点，但执行前会再查一遍）", !fast.HasBlockingError);
+
+        RenameEngine.Run(items, rule, checkDisk: true);
+        Eq("第二层（查磁盘）如实标出冲突", ItemState.ConflictOnDisk, items[0].State);
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+}
+
+try { if (Directory.Exists(testJournalRoot)) Directory.Delete(testJournalRoot, true); } catch { }
 
 Console.WriteLine();
 Console.WriteLine(new string('-', 56));

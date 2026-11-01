@@ -74,6 +74,8 @@ public sealed class SingleInstanceGate : IDisposable
 
         _ = Task.Run(async () =>
         {
+            var consecutiveFailures = 0;
+
             while (true)
             {
                 NamedPipeServerStream? server = null;
@@ -84,6 +86,7 @@ public sealed class SingleInstanceGate : IDisposable
                         PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                     await server.WaitForConnectionAsync().ConfigureAwait(false);
+                    consecutiveFailures = 0;
 
                     using (server)
                     using (var reader = new BinaryReader(server, Encoding.UTF8, leaveOpen: true))
@@ -97,10 +100,15 @@ public sealed class SingleInstanceGate : IDisposable
                         dispatcher.TryEnqueue(() => onActivate(paths));
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     // 管道断开/读失败：继续等下一条连接，不退出监听
                     try { server?.Dispose(); } catch { }
+
+                    // 🔧 P2-12：必须退避。管道名被占或权限不足时，while(true) 会空转吃满一个核
+                    consecutiveFailures++;
+                    AppLog.Error($"激活管道第 {consecutiveFailures} 次失败（退避 {Math.Min(250 * consecutiveFailures, 4000)}ms）", ex);
+                    await Task.Delay(Math.Min(250 * consecutiveFailures, 4000)).ConfigureAwait(false);
                 }
             }
         });

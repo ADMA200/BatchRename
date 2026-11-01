@@ -4,13 +4,15 @@ Windows 11 资源管理器右键菜单里的批量重命名工具，对标 Power
 
 选中 N 个文件/文件夹 → 右键「批量重命名」→ 实时预览「原名 → 新名」→ 执行 / `Ctrl+Z` 撤销。
 
+撤销有**两条独立通路**：软件内的「撤销」按钮（读 `last-batch.json`，关掉程序再打开也能撤最近一批）与**资源管理器里的 `Ctrl+Z`**（由 `IFileOperation` 的 `FOFX_ADDUNDORECORD` 登记到 Shell 撤销栈，程序退出后依然有效，一次退一批）。
+
 ## 当前状态
 
 | 里程碑 | 范围 | 状态 |
 |---|---|---|
 | **M1** | 右键菜单出现 + 拉起窗口 + 路径透传 | ✅ 已通过验收 |
-| **M2** | 重命名引擎 + 实时预览（33 项自动断言） | 引擎 ✅ / UI ✅ |
-| **M3** | 执行 + 撤销（`IFileOperation` + WAL journal） | ✅ 已通过真机验证 |
+| **M2** | 重命名引擎 + 实时预览（118 项自动断言） | 引擎 ✅ / UI ✅ |
+| **M3** | 执行 + 撤销（`IFileOperation` + 单文件事务日志 + Shell 撤销栈） | ✅ 已通过真机验证 |
 | **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ✅ 已通过真机验证 |
 | **M5** | 安装闭环 + 传统 verb 兜底 | ⬜ 未开始 |
 
@@ -82,9 +84,10 @@ dotnet build src\BatchRename.ShellTest\BatchRename.ShellTest.csproj -c Release
 dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRename.ShellTest.dll
 ```
 
-覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 恢复，共 **79 项**。退出码非 0 表示有断言失败。
+覆盖 NameSplitter / 作用域语义 / 大小写 Invariant / 正则 / 九条校验 / 批内互撞 / 磁盘冲突 / 自动编号 / 性能预算 / **执行器 + 撤销 journal（真实文件）** / Pending 回滚 / **文件与目录的仅大小写改名** / 执行中断后的磁盘回写 / 二次改名 / 链式排序 / 循环检测 / 逐项失败 / 两层防抖，共 **118 项**。退出码非 0 表示有断言失败。
 
-> ⚠️ 测试 10–13 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**。
+> ⚠️ 测试 10–16 会在 `%TEMP%\BatchRenameTest\` 下创建临时文件并真实改名，用完自动清理，**不会碰你的实际文件**；journal 也会被指到 `%TEMP%\BatchRenameTestJournal\`，不会覆盖你的 `last-batch.json`。
+> 测试执行器的 `AddUndoRecord` 一律为 `false`，所以不会往你资源管理器的 Ctrl+Z 里塞临时文件。
 > 但只要在 Windows 上跑这些测试，就别同时开着 `docs\samples` 做手工改名测试，避免互相干扰。
 
 ## 目录结构
@@ -93,8 +96,9 @@ dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRe
 BatchRename\
 ├─ BatchRename.sln
 ├─ docs\
-│  ├─ SPEC.md                规格书（v1.2，契约与验收标准）
+│  ├─ SPEC.md                规格书（v1.5，契约与验收标准）
 │  ├─ ARCHITECTURE.md        架构说明（进程拓扑、模块、决策、排障）
+│  ├─ REVIEW-2026-11-01.md   代码评审与实测记录（含系统级撤销验证、journal 去留分析）
 │  └─ samples\               验收用样本文件名（15 项边界情况）
 ├─ src\
 │  ├─ BatchRename.Shell\     C++ / WRL / x64，右键菜单 COM 组件
@@ -103,13 +107,14 @@ BatchRename\
 │  │  │  ├─ NameSplitter.cs          主名/扩展名切分
 │  │  │  ├─ RenameRule.cs            替换 + 大小写
 │  │  │  ├─ RenameEngine.cs          编排 + 九条校验 + 冲突检测
-│  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行
-│  │  │  ├─ UndoJournal.cs           WAL journal + 反向执行
+│  │  │  ├─ FileOperationRunner.cs   STA + IFileOperation 执行（含 Shell 撤销栈登记）
+│  │  │  ├─ UndoJournal.cs           单文件事务日志（write-ahead）+ 反向执行
 │  │  │  └─ NativeMethods.txt        CsWin32 输入清单
 │  │  ├─ Services\
-│  │  │  └─ SingleInstanceGate.cs    命名 Mutex + 命名管道激活
+│  │  │  ├─ SingleInstanceGate.cs    命名 Mutex + 命名管道激活
+│  │  │  └─ AppLog.cs                App 侧日志（异常兜底，1MB 循环）
 │  │  └─ Models\RenameItem.cs
-│  └─ BatchRename.ShellTest\ 引擎+执行器断言测试（控制台，67 项）
+│  └─ BatchRename.ShellTest\ 引擎+执行器断言测试（控制台，118 项）
 ├─ packaging\
 │  ├─ AppxManifest.xml       稀疏包清单（CLSID 与 Verb 注册）
 │  └─ Assets\                3 个 Logo
@@ -126,8 +131,9 @@ BatchRename\
 
 | 文档 | 内容 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 规格书 v1.1。需求、契约、清单全文、脚本全文、验收标准、已知缺陷修订 |
+| [docs/SPEC.md](docs/SPEC.md) | 规格书 v1.5。需求、契约、清单全文、脚本全文、验收标准、已知缺陷修订 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构说明。进程拓扑、启动时序、模块职责、关键决策、排障地图 |
+| [docs/REVIEW-2026-11-01.md](docs/REVIEW-2026-11-01.md) | 代码评审。问题清单（P0/P1/P2）、实测证据、优化建议与修复批次 |
 
 ## 维护约定
 
@@ -139,14 +145,21 @@ BatchRename\
 
 - **执行期无逐项进度**：`IFileOperation` 批量执行拿不到细粒度回调，只有不确定态进度环；`RunAsync` 已接受 `CancellationToken` 但 UI 尚未接取消按钮
 - **部分失败只显示首条原因**：未做 §8.9.5 的失败清单对话框
-- `Esc` 关闭前没有"有未执行改动"的二次确认
+- **软件内撤销只覆盖最近一批**：`last-batch.json` 每次执行覆盖写，没有历史批次列表（7 天 / 20 批的历史已按 v1.5 砍掉）；更早的批次只能靠资源管理器的 Ctrl+Z（受 Shell 撤销栈生命周期限制）
+- **执行中断会留下半完成状态**：`OnExecute` 已加 try/catch + `JournalError`，异常时按磁盘现状回写逐项 ok 并写 `app.log`；但"执行期逐项进度/取消"仍未做，中断只会在下次启动时提示回滚
 - 未做 `Shift+右键` 传统菜单兜底（M5）
 - 未做拖放启动（M5）
 - 图标为临时方案（应用 Aa / 菜单铅笔），任务栏 plating 未彻底解决
 - 不支持递归子文件夹、云盘/回收站等虚拟项（设计上不做）
 
-## 历史坑（详见 SPEC v1.1 / v1.2 修订记录）
+## 历史坑（详见 SPEC 各版修订记录与 docs/REVIEW-2026-11-01.md）
 
 - **`File.Exists` 在 NTFS 上忽略大小写**，不能用来校验「仅大小写改名」，也不能判断撤销时源名是否被占用
-- **CaseOnly 两步改名不能塞进单个 `IFileOperation` 队列**（前一步的结果尚不存在）
-- **磁盘冲突检测必须在预览阶段做**，否则执行会静默覆盖同名文件
+- **`File.Exists` 对目录返回 false**，判断目录存在必须用 `Directory.Exists`（v1.5 写 `LoadLast` 时踩到）
+- **`File.Move` 动不了目录**（抛 `FileNotFoundException`）；目录改名要用 `Directory.Move` 或交给 `IFileOperation`
+- **系统级 Ctrl+Z 不是死路**：`FOFX_ADDUNDORECORD` 会把整批登记进 Shell 撤销栈，进程退出后依然有效；旧版"有意不加 `FOF_ALLOWUNDO`"导致资源管理器里 Ctrl+Z 完全无反应
+- **`File.Move` / `IFileOperation` 都能直接做仅大小写改名**（文件与目录皆可）——v1.2 的"必须两步中转"是误判，真正的病因是"同一 `IFileOperation` 队列引用尚未生成的临时名"
+- **磁盘冲突检测必须在预览阶段做**，否则执行会静默覆盖同名文件；`FOF_NOCONFIRMATION` 下覆盖连提示都没有
+- **"源名会让出"的冲突豁免会把环放过去**：`a→b` + `b→a` 两项互相把对方当空位。v1.5 起由 `MarkBatchCycles` 在预览阶段拦掉（整环标「批内循环改名」）
+- **链式改名 `a→b` + `b→c` 的入队顺序决定会不会丢数据**：错序时 `a→b` 会先覆盖 `b` 的原内容。v1.5 起执行器按依赖排序入队
+- **`IFileOperation` 改名失败的 HRESULT 常来自复制引擎**（`0x8027xxxx`，如 `0x80270027` = 源文件被占用），不是 `0x8007xxxx`；只映射 Win32 那族会把错误显示成原始码

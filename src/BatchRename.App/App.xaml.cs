@@ -15,12 +15,28 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+
+        // 🔧 P0-3：WinUI 3 没有内建崩溃对话框，不挂这三个钩子的话，
+        // 任何未处理异常都表现为"进程静默消失"，连一行记录都没有。
+        UnhandledException += (_, e) =>
+            AppLog.Error("Application.UnhandledException", e.Exception);
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            AppLog.Error("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            AppLog.Error("TaskScheduler.UnobservedTaskException", e.Exception);
+            e.SetObserved();
+        };
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         // 规格书 §4.2：先解析 stdin，再建窗口，避免闪一个空窗
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var payload = ShellPayload.ReadFromStdIn();
+        AppLog.Info($"[startup] paths={payload.Paths.Count} stdin={sw.ElapsedMilliseconds}ms pid={Environment.ProcessId}");
 
         _gate = new SingleInstanceGate();
 
@@ -39,6 +55,12 @@ public partial class App : Application
         }
 
         _window = new MainWindow(payload);
+
+        // 🔧 P2-14：关窗时清理 active.pid 并释放 mutex（以前 Dispose 没有任何调用点，
+        // pid 文件永远残留）。Closed 在 UI 线程上触发，与创建 mutex 的线程一致，
+        // 所以 ReleaseMutex 不会抛"不拥有互斥体"。
+        _window.Closed += (_, _) => _gate?.Dispose();
+
         _window.Activate();
     }
 

@@ -94,7 +94,13 @@ public static class RenameEngine
     /// 冲突时自动编号（§8.8 可选策略，默认关）。
     /// 编号加在 **Stem 尾部**：a.txt → a (1).txt，不是 a.txt (1)。
     /// </param>
-    public static EngineOutcome Run(IReadOnlyList<RenameItem> items, RenameRule rule, bool autoNumber = false)
+    /// <param name="checkDisk">
+    /// 是否做「磁盘已存在」检查（§8.11 两层防抖的第一层传 false）。
+    /// 纯内存那层只跑文本规则 + 批内互撞/环，磁盘枚举留给停手 400ms 后的第二层。
+    /// **执行前必须用 true 跑一次**，否则会拿"没查过磁盘"的状态去点执行。
+    /// </param>
+    public static EngineOutcome Run(
+        IReadOnlyList<RenameItem> items, RenameRule rule, bool autoNumber = false, bool checkDisk = true)
     {
         var regex = rule.Compile(out var regexError);
         if (regexError is not null)
@@ -106,22 +112,24 @@ public static class RenameEngine
 
         foreach (var item in items)
         {
-            // 本批次已改过名的项不再参与规则计算，保持"已改名"状态
-            if (item.IsRenamed)
-            {
-                item.NewName = item.OriginalName;
-                item.State = ItemState.Renamed;
-                item.Message = "已改名";
-                continue;
-            }
-
+            // 🔧 P1-7：本会话改过名的项**照常参与规则计算**。
+            // 旧实现在这里直接 continue，等于"改过一次 → 这一窗口里永远改不动它"，
+            // 用户看到的是项目被锁定/忽略（REVIEW P1-7）。
+            // 现在只有在"当前规则对它没有任何作用"时，才把状态回显成「已改名」当视觉标记。
             var newName = BuildNewName(item, rule, regex, ref anyTimeout);
             item.NewName = newName;
             Validate(item);
+
+            if (item.IsRenamed && item.State == ItemState.Unchanged)
+            {
+                item.State = ItemState.Renamed;
+                item.Message = "已改名";
+            }
         }
 
         MarkBatchConflicts(items);
-        MarkDiskConflicts(items);
+        MarkBatchCycles(items);      // 🔧 P0-1：环状改名会静默覆盖，必须先拦
+        if (checkDisk) MarkDiskConflicts(items);
 
         if (autoNumber) ApplyAutoNumbering(items);
 
@@ -245,15 +253,17 @@ public static class RenameEngine
         Set(item, ItemState.Ok, null);
     }
 
-    /// <summary>规格书 §8.8 的批内互撞部分（磁盘检测留 M3）。</summary>
+    /// <summary>规格书 §8.8 的批内互撞部分。</summary>
     private static void MarkBatchConflicts(IReadOnlyList<RenameItem> items)
     {
-        var map = new Dictionary<(string Dir, string Name), List<RenameItem>>();
+        // 键必须大小写不敏感：NTFS 上 Same.txt 与 same.txt 是同一个名字，
+        // 而磁盘检查那一侧用的是 OrdinalIgnoreCase，两边不能不一致（REVIEW P2-15）。
+        var map = new Dictionary<string, List<RenameItem>>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)
         {
             if (item.State is ItemState.Invalid or ItemState.Unchanged or ItemState.Renamed) continue;
 
-            var key = (item.Directory, item.NewName);
+            var key = Path.Combine(item.Directory, item.NewName);
             if (!map.TryGetValue(key, out var bucket))
             {
                 bucket = new List<RenameItem>(1);
@@ -276,6 +286,64 @@ public static class RenameEngine
     {
         item.State = state;
         item.Message = message;
+    }
+
+    /// <summary>
+    /// 批内**循环**改名检测（REVIEW P0-1，实测会丢数据）。
+    ///
+    /// `a.txt → b.txt` 且 `b.txt → a.txt`：`MarkDiskConflicts` 里"本批会让出的源名"
+    /// 判定会把两项都当空位放行，而执行阶段 `FOF_NOCONFIRMATION` 会**静默覆盖**——
+    /// 实测原 b.txt 的内容永久消失，结果还报"1 成功 1 失败"。
+    ///
+    /// 做法：沿"目标名 = 另一项的源名"这条边一直走，走回本轮起点即成环，整环标红阻止。
+    /// 链（`a→b`、`b→c`）不是环，不会误伤；它们由执行器按依赖顺序排队保证安全。
+    /// 复杂度 O(n)：每个节点最多被走一次，遇到已访问节点立即停。
+    /// </summary>
+    internal static void MarkBatchCycles(IReadOnlyList<RenameItem> items)
+    {
+        var bySource = new Dictionary<string, RenameItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            if (item.State is not (ItemState.Ok or ItemState.Warning)) continue;
+            bySource[item.FullPath] = item;
+        }
+        if (bySource.Count < 2) return;
+
+        var visitedRound = new Dictionary<RenameItem, int>();
+        var round = 0;
+
+        foreach (var start in bySource.Values)
+        {
+            round++;
+            var chain = new List<RenameItem>();
+            var cur = start;
+
+            while (true)
+            {
+                if (visitedRound.TryGetValue(cur, out var seenRound))
+                {
+                    if (seenRound == round)
+                    {
+                        var from = chain.IndexOf(cur);
+                        if (from >= 0)
+                        {
+                            foreach (var cycleItem in chain.Skip(from))
+                            {
+                                Set(cycleItem, ItemState.ConflictInBatch, "批内循环改名");
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                visitedRound[cur] = round;
+                chain.Add(cur);
+
+                if (!bySource.TryGetValue(cur.NewFullPath, out var next)) break;
+                if (ReferenceEquals(next, cur)) break;   // 目标就是自己（仅大小写/无变化）
+                cur = next;
+            }
+        }
     }
 
     /// <summary>
@@ -370,11 +438,10 @@ public static class RenameEngine
         foreach (var item in conflicts)
         {
             var set = SetFor(item.Directory);
-            var ext = item.IsDirectory ? "" : item.Ext;
-
-            var stem = ext.Length > 0 && item.NewName.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
-                ? item.NewName[..^ext.Length]
-                : item.NewName;
+            // 必须从**目标名**切主名/扩展名，不能用 item.Ext（那是改名前的老扩展名）：
+            // 旧实现在「改扩展名 + 自动编号」时会产出 "a.md (1).txt"（编号落在扩展名之后，
+            // 且扩展名被打回原样）。见 docs/REVIEW-2026-11-01.md P1-5。
+            var (stem, ext) = NameSplitter.Split(item.NewName, item.IsDirectory);
 
             var resolved = false;
             // n=0 先试原名：批内互撞时第一个项应该保留 x.txt，而不是被编成 x (1).txt

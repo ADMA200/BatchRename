@@ -28,9 +28,8 @@
     <PublishDir>$(MSBuildThisFileDirectory)..\..\bin\publish\BatchRename.App\</PublishDir>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- 临时：把 CsWin32 生成代码落盘，便于确认签名 -->
-    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
-    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+    <!-- CsWin32 生成代码默认只在内存里；要确认签名时命令行加
+         -p:EmitCompilerGeneratedFiles=true -p:CompilerGeneratedFilesOutputPath=obj/generated 即可 -->
   </PropertyGroup>
 
   <ItemGroup>
