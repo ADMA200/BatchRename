@@ -35,7 +35,25 @@ jobs:
         run: dotnet build src/BatchRename.ShellTest/BatchRename.ShellTest.csproj -c Release
 
       # 原生 Shell 扩展（C++/WRL）必须一起编：改 dllmain/ExplorerCommand 时
-      # 前面三步都不会红，问题要等装到机器上才发现
+      # 前面三步都不会红，问题要等装到机器上才发现。
+      # 失败时把关键行以 ::error:: 注解抛出——日志接口要鉴权，注解接口公开可读。
       - name: Build (native shell extension)
-        shell: cmd
-        run: msbuild src\BatchRename.Shell\BatchRename.Shell.vcxproj /p:Configuration=Release /p:Platform=x64 /m /v:m
+        shell: powershell
+        run: |
+          $proj = 'src\BatchRename.Shell\BatchRename.Shell.vcxproj'
+          $common = @($proj, '/p:Configuration=Release', '/p:Platform=x64', '/m', '/v:m')
+
+          $toolset = (& msbuild @common '-getProperty:PlatformToolset' 2>$null | Select-Object -Last 1)
+          $msb = (Get-Command msbuild).Source
+          Write-Host "msbuild=$msb toolset=$toolset"
+
+          $log = Join-Path $env:RUNNER_TEMP 'msbuild.log'
+          & msbuild @common 2>&1 | Tee-Object -FilePath $log | Select-Object -Last 60
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+
+          Write-Host "::error::toolset=$toolset msbuild=$msb"
+          Get-Content $log |
+            Where-Object { $_ -match 'error|MSB\d{4}|LNK\d{4}|C\d{4}' } |
+            Select-Object -Unique -First 6 |
+            ForEach-Object { Write-Host "::error::$_" }
+          exit 1
