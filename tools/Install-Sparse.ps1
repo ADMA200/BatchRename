@@ -73,6 +73,21 @@ foreach ($old in $existing) {
     }
 }
 
+# --- 1.5 同步图标资产到运行时目录 ---
+# 右键菜单的图标由 Shell DLL 按 ModuleDir()\Assets\menu.ico 读取，
+# 而 ModuleDir 是 -ExternalLocation 指向的 bin\publish，不是 packaging\。
+# 以前这里没有拷贝步骤，所以换了 packaging\Assets 里的图标后菜单一直是旧的。
+$assetSource = Join-Path $RepoRoot 'packaging\Assets'
+$assetTarget = Join-Path $externalPath 'Assets'
+if (Test-Path $assetSource) {
+    New-Item -ItemType Directory -Force -Path $assetTarget | Out-Null
+    Copy-Item -Path (Join-Path $assetSource '*') -Destination $assetTarget -Recurse -Force
+    $count = @(Get-ChildItem $assetTarget -File).Count
+    Write-Host "[ok] Assets synced -> $assetTarget ($count files)" -ForegroundColor Green
+} else {
+    Write-Host "[warn] packaging\Assets not found, menu icon may stay stale" -ForegroundColor Yellow
+}
+
 # --- 2. 注册 ---
 Add-AppxPackage -Register $manifestPath -ExternalLocation $externalPath
 $pkg = Get-AppxPackage -Name $PackageName
