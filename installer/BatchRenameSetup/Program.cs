@@ -126,8 +126,12 @@ internal static class Program
                 if (answer != 6 /* IDYES */) return 0;
             }
 
+            // 解压 + 注册约 5 秒，纯静默会让用户以为没反应。
+            // 静默模式（/S）不弹进度框，其余情况都显示滚动进度。
+            using var busy = silent ? null : new BusyDialog(AppName + " 安装程序", "正在解压安装文件…");
+
             Say($"解压到 {appRoot}");
-            var stage = Extract(appRoot);
+            var stage = busy is null ? Extract(appRoot) : busy.Run(() => Extract(appRoot));
             var installedRoot = FindPackageRoot(stage);
 
             var script = Path.Combine(installedRoot, "tools", "Install-Sparse.ps1");
@@ -142,8 +146,13 @@ internal static class Program
                 return 1;
             }
 
+            busy?.SetLine("正在注册右键菜单（资源管理器会短暂重启）…");
             Say($"调用注册脚本 {script}");
-            var (code, output) = RunPowerShell($"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"");
+
+            var (code, output) = busy is null
+                ? RunPowerShell($"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
+                : busy.Run(() => RunPowerShell($"-NoProfile -ExecutionPolicy Bypass -File \"{script}\""));
+
             Say($"注册脚本退出码 {code}");
             if (code != 0) Say(Tail(output, 2000));
 
