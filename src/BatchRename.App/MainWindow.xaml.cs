@@ -379,6 +379,25 @@ public sealed partial class MainWindow : Window
     /// 现在只认 Click，且意图完全从列表真实状态推断：不是全勾 → 全勾；已经全勾 → 全不勾，
     /// 点完立刻 SyncSelectAllBox() 把显示纠正回 true/false，中间态不会留下。
     /// </summary>
+    /// <summary>§10.3：26H2 把第三方扩展默认收进「应用扩展」子菜单，给一条直达设置的入口。</summary>
+    private async void OnOpenContextMenuSettings(object sender, RoutedEventArgs e)
+    {
+        // 先试 26H2 的上下文菜单设置页，打不开再退回个性化首页
+        foreach (var uri in new[] { "ms-settings:personalization-contextmenu", "ms-settings:personalization" })
+        {
+            try
+            {
+                if (await Windows.System.Launcher.LaunchUriAsync(new Uri(uri))) return;
+            }
+            catch
+            {
+                // 试下一个
+            }
+        }
+
+        SetError("无法打开设置页，请手动进入：设置 > 个性化 > 上下文菜单");
+    }
+
     private void OnSelectAllClick(object sender, RoutedEventArgs e)
     {
         if (_items.Count == 0) return;

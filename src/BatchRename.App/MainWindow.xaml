@@ -101,6 +101,11 @@
 
                         <CheckBox x:Name="AutoNumberBox" Content="冲突时自动编号"
                                   MinWidth="0" Click="OnRuleChanged" />
+
+                        <!-- §10.3：26H2 默认把扩展收进「应用扩展」，给一条直达设置的路 -->
+                        <HyperlinkButton Content="命令没出现在右键菜单？"
+                                         FontSize="12" Padding="0"
+                                         Click="OnOpenContextMenuSettings" />
                     </StackPanel>
                 </ScrollViewer>
 

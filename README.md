@@ -14,9 +14,9 @@ Windows 11 资源管理器右键菜单里的批量重命名工具，对标 Power
 | **M2** | 重命名引擎 + 实时预览（124 项自动断言） | 引擎 ✅ / UI ✅ |
 | **M3** | 执行 + 撤销（`IFileOperation` + 单文件事务日志 + Shell 撤销栈） | ✅ 已通过真机验证 |
 | **M4** | Mica / 自定义标题栏 / 键盘 / 单实例 | ✅ 已通过真机验证 |
-| **M5** | 安装闭环 + 传统 verb 兜底 | 🟡 部分：稀疏包已注册（`Get-AppxPackage BatchRename.Shell` → `1.0.0.0 / Ok`，位置 `packaging\`），传统 verb 兜底与「干净机器从零安装」的完整验收未做 |
+| **M5** | 安装闭环 + SendTo 兜底入口 | ✅ 卸载/全新安装闭环、DisplayName 生效、SendTo 已建；传统 verb 有意不做（`MultiSelectModel` 默认 `Single`，多选只传第一个） |
 
-当前基线标签：`v0.3-M4`
+当前基线标签：`v0.4-M5`
 
 ## 环境要求
 
@@ -67,9 +67,13 @@ dotnet publish src\BatchRename.App\BatchRename.App.csproj -c Release
 powershell -ExecutionPolicy Bypass -File .\tools\Install-Sparse.ps1
 ```
 
-脚本会做：三处 CLSID 一致性自检 → 检查 Publisher 变更 → `Add-AppxPackage -Register` → 重启 explorer。
+脚本会做：三处 CLSID 一致性自检 → 检查 Publisher/Identity 变更并卸载旧包 → `Add-AppxPackage -Register` → 创建 SendTo 快捷方式 → 重启 explorer。
 
 **必须以普通用户运行**，不需要管理员。
+
+> **右键菜单找不到命令？** 26H2 默认把第三方扩展收进「应用扩展」子菜单。
+> 三条路：① 设置 > 个性化 > 上下文菜单 里提升到主菜单；② 用「发送到 > 批量重命名」（不受折叠影响）；
+> ③ 应用内左栏底部有直达设置页的链接。
 
 ### 3. 卸载
 
@@ -157,8 +161,7 @@ BatchRename\
 - **失败清单最多列 200 条**：超出部分提示用「复制清单」带走（避免一次塞几千个 TextBlock）；底栏仍只显示首条原因
 - **软件内撤销只覆盖最近一批**：`last-batch.json` 每次执行覆盖写，没有历史批次列表（7 天 / 20 批的历史已按 v1.5 砍掉）；更早的批次只能靠资源管理器的 Ctrl+Z（受 Shell 撤销栈生命周期限制）
 - **执行中断会留下半完成状态**：`OnExecute` 已加 try/catch + `JournalError`，异常时按磁盘现状回写逐项 ok 并写 `app.log`；中断只会在下次启动时提示回滚
-- 未做 `Shift+右键` 传统菜单兜底（M5）
-- 未做拖放启动（M5）
+- 未做拖放启动（M5 遗留，SendTo 已覆盖多选场景）
 - 图标为临时方案（应用 Aa / 菜单铅笔），任务栏 plating 未彻底解决
 - 不支持递归子文件夹、云盘/回收站等虚拟项（设计上不做）
 

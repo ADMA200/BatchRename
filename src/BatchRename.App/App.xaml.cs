@@ -35,7 +35,8 @@ public partial class App : Application
     {
         // 规格书 §4.2：先解析 stdin，再建窗口，避免闪一个空窗
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var payload = ShellPayload.ReadFromStdIn();
+        // 两条入口：右键菜单（stdin）与 SendTo（命令行参数），stdin 优先
+        var payload = ShellPayload.Read();
         AppLog.Info($"[startup] paths={payload.Paths.Count} stdin={sw.ElapsedMilliseconds}ms pid={Environment.ProcessId}");
 
         _gate = new SingleInstanceGate();

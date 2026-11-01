@@ -21,6 +21,35 @@ public sealed class ShellPayload
 
     public static ShellPayload Empty { get; } = new(Array.Empty<string>());
 
+    /// <summary>
+    /// 两条入口按优先级取：
+    /// ① Shell 扩展（右键菜单）：stdin 传 UTF-16LE + \0 分隔；
+    /// ② SendTo 快捷方式 / 直接拖到 exe：命令行参数。
+    /// 都没有 → 无参启动（拖放模式，M5 后续）。
+    /// </summary>
+    public static ShellPayload Read(string[]? args = null)
+    {
+        var fromStdin = ReadFromStdIn();
+        if (fromStdin.Paths.Count > 0) return fromStdin;
+
+        // GetCommandLineArgs()[0] 是 exe 自身路径，跳过；
+        // "--xxx" 开头的留给未来的开关（如 --undo-last），不当路径
+        var argv = args ?? Environment.GetCommandLineArgs().Skip(1).ToArray();
+
+        var list = new List<string>();
+        foreach (var a in argv)
+        {
+            if (string.IsNullOrWhiteSpace(a)) continue;
+            if (a.StartsWith("--", StringComparison.Ordinal)) continue;
+
+            // SendTo 传的是裸路径；去掉可能的引号
+            var p = a.Trim('"');
+            if (File.Exists(p) || Directory.Exists(p)) list.Add(p);
+        }
+
+        return list.Count > 0 ? new ShellPayload(list) : Empty;
+    }
+
     public static ShellPayload ReadFromStdIn()
     {
         try

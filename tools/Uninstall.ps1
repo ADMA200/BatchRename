@@ -14,14 +14,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$pkg = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue
-if (-not $pkg) {
+# 先删 SendTo 快捷方式（与安装脚本对应，避免卸载后还留个指向已删 exe 的死链接）
+$lnkPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\SendTo\批量重命名.lnk'
+if (Test-Path $lnkPath) {
+    Remove-Item $lnkPath -Force
+    Write-Host '[ok] 已删除 SendTo 快捷方式' -ForegroundColor Green
+}
+
+# 按前缀找：Identity 改名后旧包名不同，只按当前名找会漏
+$pkgs = @(Get-AppxPackage -Name 'BatchRename*' -ErrorAction SilentlyContinue)
+if ($pkgs.Count -eq 0) {
     Write-Host 'Not installed.' -ForegroundColor Yellow
     return
 }
 
-Write-Host "[..] Removing $($pkg.PackageFullName)"
-Remove-AppxPackage -Package $pkg.PackageFullName
+foreach ($pkg in $pkgs) {
+    Write-Host "[..] Removing $($pkg.PackageFullName)"
+    Remove-AppxPackage -Package $pkg.PackageFullName
+}
 
 if (-not $SkipExplorerRestart) {
     Write-Host '[..] Restarting explorer.exe'

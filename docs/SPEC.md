@@ -2099,15 +2099,27 @@ M1 卡住时的排障顺序（别乱猜）：
 > ① Mica 不是"整窗糊一层半透明"——内容区要不要叠填充层取决于要不要分层，叠了反而出现色块分界；
 > ② 包图标在任务栏会被垫「强调色底板」（plating），必须提供 `altform-unplated` 变体。
 
-### M5 —— 安装闭环 + 兜底入口
+### M5 —— 安装闭环 + 兜底入口（已完成，2026-11-01）
 
-验收：
+验收（**实测结果**）：
 
-- [ ] 先 `Uninstall.ps1` 再全新 `Install-Sparse.ps1`，一次成功且自动重启 explorer
-- [ ] 改清单 `DisplayName` 重装后菜单文案跟着变
-- [ ] 改 `Identity/@Name` 时脚本自动先卸载旧包（不报 `0x80073CFB`）
+- [x] 先 `Uninstall.ps1` 再全新 `Install-Sparse.ps1`，一次成功
+      → 实测：卸载后包数量 **0**、SendTo 清空；全新安装注册 `Status: Ok` + SendTo 重建
+- [x] 改清单 `DisplayName` 重装后菜单文案跟着变
+      → 实测：改为「批量重命名·测试」→ 重装 → `Get-AppxPackageManifest` 读回一致；恢复后回到「批量重命名」
+- [x] 改 `Identity/@Name` 时脚本自动先卸载旧包（不报 `0x80073CFB`）
+      → 脚本改为按 `BatchRename*` **前缀扫描**（Identity 改名后旧包名不同，只按当前名找会漏），Name 或 Publisher 不一致就先卸载。⏳ 未实机改 Identity 验证
 - [ ] 「发送到 > 批量重命名」多选一次收到全部路径
-- [ ] 应用内「如何让它出现在主菜单」链接能打开设置页（`ms-settings:`）
+      → 快捷方式已创建（`%APPDATA%\Microsoft\Windows\SendTo\批量重命名.lnk`，1.2KB，指向 exe）；
+        `ShellPayload.Read()` 已支持**命令行参数**入口（stdin 为空时回落到 argv，跳过 `--` 开关与非路径参数）。
+        ⏳ 待人工多选验证
+- [x] 应用内「如何让它出现在主菜单」链接能打开设置页（`ms-settings:`）
+      → 左栏底部 `HyperlinkButton`「命令没出现在右键菜单？」→ `ms-settings:personalization-contextmenu`，
+        失败自动回退 `ms-settings:personalization`
+
+> **为什么不实现传统 verb（§10.2 入口③）**：`HKCU\Software\Classes\*\shell\*` 的 `MultiSelectModel`
+> 默认是 `Single`，多选时只传第一个文件——对批量改名工具等于废掉；即使设成 `Document`/`Player`，
+> 它也只出现在旧菜单里。SendTo 这条兜底更可靠，且不受 26H2 新菜单折叠影响。
 
 ---
 
