@@ -103,7 +103,7 @@ Shell 扩展（C++）──▶ Launcher / Log（互不依赖）
 | `Core/UndoJournal` | 单文件事务日志 + 失效判定 + 反向执行 | 只有 `last-batch.json`（覆盖写）；先落盘再动手，`Flush(true)` 强制刷盘；`RollbackPendingAsync` 专管崩溃恢复 |
 | `Models/RenameItem` | 单项数据 | `INotifyPropertyChanged`，`State` 驱动 UI 配色；`IsRenamed` **只是显示标记，不是规则计算的闸门**（改过的项照常参与下一轮计算） |
 | `App/ShellPayload` | stdin 解析 | `Encoding.Unicode` + `'\0'` 切分 |
-| `App/MainWindow` | 预览 UI | **两层防抖**（150ms 纯内存 + 400ms 磁盘）；执行/撤销后保留用户已输入的规则；`Esc` 有未执行改动时二次确认；「全选」三态与列表同步；DataTemplate 用 `{Binding}`（`Window` 根不支持 `x:Bind`） |
+| `App/MainWindow` | 预览 UI | **两层防抖**（150ms 纯内存 + 400ms 磁盘）；执行/撤销后保留用户已输入的规则；`Esc` 有未执行改动时二次确认；「全选」三态与列表同步；DataTemplate 用 `{Binding}`（`Window` 根不支持 `x:Bind`）。**实测：7 处绑定全换成静态文本只省 2MB**，所以不必为用 `x:Bind` 去抽 `UserControl`——那是 CPU 优化不是内存优化（§7.8.7 v1.7） |
 | `Shell/Launcher` | 定位 exe + 管道启动 | 路径靠 `GetModuleFileNameW` 推导，零 IO |
 | `App/Services/AppLog` | App 侧日志（1MB 循环） | 只写异常与启动信息；日志失败绝不影响主流程。位置 `%LOCALAPPDATA%\BatchRename\logs\app.log` |
 | `Shell/Log` | 双写日志 | 1MB 循环；**只能在 Invoke 路径调用** |
