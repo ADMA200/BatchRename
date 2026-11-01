@@ -2,116 +2,9 @@
 
 > 目标：Windows 11 26H2 上一个对标 PowerRename 的批量重命名工具（个人自用，非商业）
 > 基线：Windows 11 26H2（Build 26300 系列）/ Visual Studio 2026 / .NET 10 LTS / Windows App SDK 2.6.4
-> 文档版本：**v1.1 · 2026-10-31**（v1.0 · 2026-10-30）
+> 文档版本：**v1.12 · 2026-11-02**（v1.0 · 2026-10-30）
 > 状态：**规格书（Spec）+ 落地修订**。本文件不含可直接编译的工程，只含契约、清单全文、脚本全文、关键片段与验收标准。
 
-## v1.1 修订记录
-
-v1.1 依据 `E:\Project\BatchRename` 的**实际编译与运行结果**修订。以下 8 处均为 v1.0 写错或写漏、到实现阶段才暴露的问题，正文对应位置已就地更正并标注 `🔧 v1.1`。
-
-| # | 位置 | v1.0 的问题 | v1.1 更正 |
-|---|---|---|---|
-| 1 | §0.4 / §7.1 | 写 `Windows App SDK 2.5.x` | 实测 NuGet 最新稳定版是 **2.6.4**，已在项目中使用 |
-| 2 | §4.4 | 链接依赖漏 `user32.lib` | `MessageBoxW` 需要它，缺了直接 `LNK2019` |
-| 3 | §5.1 | 头文件声明未带 `noexcept`，但 §5.3 实现带了 | 声明与定义必须一致，否则 `C2382` |
-| 4 | §5.1 | 称 `wrl/module.h` 会自动导出三个函数 | **不会**。必须用 `.def` 或 `__declspec(dllexport)`；且签名要用 `STDAPI` 对齐 `combaseapi.h`，否则 `C2375` |
-| 5 | §5.4 | `SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0)` | **应为 `writeEnd`**。清掉 `readEnd` 的继承标志再放进 `HANDLE_LIST` 会让 `CreateProcess` 返回 87 |
-| 6 | §7.1 | 只提 `PublishSingleFile` 会导致 `0xc000027b` | WinAppSDK **2.6.4 的 publish 不生成 `resources.pri`**，非打包应用缺它必崩，已在 csproj 加 Target |
-| 7 | §8.5 | `WordSeps` 含 `'`，却要求"`don't` 不变 `Don'T`" | 自相矛盾。`'` 已移除，且非字母数字字符不改变词首状态 |
-| 8 | §5.4 / §6.7 | 日志路径写 `%LOCALAPPDATA%\BatchRename\logs\shell.log` | dllhost 在包容器内运行，实际被虚拟化到 `...\Packages\BatchRename.Shell_*\LocalCache\Local\BatchRename\logs\` |
-
-另附两条 WinUI 3 工程约束（v1.0 未提及），见 §7.4 末尾。
-
-## v1.2 修订记录
-
-v1.2 依据 M3（执行 + 撤销）的实现与真机测试结果修订。**其中 #2 与 #5 是会导致数据丢失的严重问题**，已就地更正。
-
-| # | 位置 | v1.1 的问题 | v1.2 更正 |
-|---|---|---|---|
-| 1 | §7.1 / §8.9.3 | CsWin32 清单写 `<None Include="Core\NativeMethods.txt" />` | 必须挂 **`<AdditionalFiles>`**，否则源生成器读不到，等于没配 |
-| 2 | §8.8 | 只把「磁盘已存在」检测算作 M3 的事 | **M2 预览阶段就必须做**。缺失时改名会直接覆盖同名文件，**静默丢数据**，且用户完全无感 |
-| 3 | §8.9.2 | CaseOnly 在同一 `IFileOperation` 内连续入队两次 `RenameItem`，第二次按临时名重建 `IShellItem` | **行不通**。`PerformOperations` 之前临时文件根本不存在，`SHCreateItemFromParsingName` 返回 `0x80070002`；IFileOperation 队列无法引用前序结果。改用 `File.Move` 两步 |
-| 4 | §8.9.4 | 回调方法名写 `PostRename` | 实际接口是 **`PostRenameItem`**。本项目最终不实现 sink，改为执行后用文件系统校验结果（省掉 15 个回调方法） |
-| 5 | §8.7 / §8.10.3 | 未提大小写敏感陷阱 | **`File.Exists` 在 NTFS 上忽略大小写**，绝不能用于：① 校验「仅大小写改名」是否生效；② 判断撤销时源名是否被占用。两处都会把整批判成失败/失效 |
-| 6 | §5.2 | `GetTitle` 返回「批量重命名 (N)」 | 改为固定「批量重命名」。数量在打开的窗口里看更直观，菜单标题每次变反而干扰定位 |
-
-## v1.3 修订记录（M4 界面、单实例与实测校准）
-
-v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是实测数据对 v1.0 预估的校准**，不是代码缺陷。
-
-| # | 位置 | v1.2 的问题 | v1.3 更正 |
-|---|---|---|---|
-| 1 | §7.4 | 内容区叠 `LayerFillColorDefaultBrush` | Mica 只作整窗底层，**内容区不叠连续填充层**；否则标题栏与内容之间会出现明显色块分界，和 WinUI Gallery / PowerRename 的观感不一致 |
-| 2 | §7.4 | `MicaBackdrop Kind="BaseAlt"` | 改用默认 **`Base`**。BaseAlt 是给「选项卡式标题栏」应用增强对比用的，普通工具用它会显得材质过重 |
-| 3 | §7.4 | 标题栏 48px 高 | 系统 caption 默认 32px，两者不一致时窗口按钮与标题**垂直错位**。元素高度与 `TitleBarHeightOption.Standard` 必须同为 32px |
-| 4 | §7.4 | 规则栏横排在顶部 | 改为 PowerRename 式：左 300px 操作区（纵向）+ 右预览卡片；撤销/执行贴左栏底部，结果条固定在卡片内底部 |
-| 5 | §5.2 | `GetIcon` 返回 `exe路径,0` | 改返回独立的 **`Assets\menu.ico`**。exe 图标受 Shell 图标缓存影响，替换后菜单可能长期显示旧图，且无法把菜单图标与应用图标分开设计 |
-| 6 | §7.6 | Mutex 名 `Local\BatchRename.SingleInstance.{PackageFamilyName}` | 应用由 Shell `CreateProcess` 启动，`Package.Current` 不可用，改固定名 |
-| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（实测数据与分解都在 §7.8.7） |
-| 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。<br>🔧 **v1.9 更正**：`altform-unplated` 变体**实测未被采纳**（44/150/50 全套生成后仍带底板）。真正的解法是 `AppWindow.SetIcon()`，见 §6.1 |
-
-## v1.4 补充（M3 遗留项回补）
-
-| # | 位置 | 问题 | 更正 |
-|---|---|---|---|
-| 1 | §8.10.2 | 实现只写了 `state=Applied`，**没回写逐项 ok** | 已在执行后按实际结果回写。不回写的话，失败项在 journal 里仍是 `Ok=true`，撤销会去回滚根本没改名的项 |
-| 2 | §8.8 | 「自动编号」只在规格书里，未实现 | 已实现：`n=0` 先试原名（批内互撞时第一项应保留原名），之后 `stem (n).ext`，上限 999 |
-| 3 | §7.4 | 底栏缺「全选/全不选」 | 已补为 `CheckBox`，位于撤销/执行左侧；`Ctrl+A` 保留 |
-
-> 断言测试同步扩到 **79 项**（新增自动编号 9 项、Pending journal 3 项）。<br>（后续批次继续演进：92 → 102 → 115 → 118 → **124 项**，见文末 v1.5/v1.6 修订表）
-
-## v1.5 修订记录（2026-11-01：系统级撤销、journal 降级、CaseOnly 两步作废）
-
-v1.5 依据真实 `IFileOperation` 探针 + 资源管理器实发 `Ctrl+Z` 的端到端实测修订（探针方法与结论见 ARCHITECTURE §10）。
-
-| # | 位置 | v1.4 的问题 | v1.5 更正 |
-|---|---|---|---|
-| 1 | §0.3 第 8 条 | 「Explorer 的系统级 Ctrl+Z 无法撤销其它进程发起的批量重命名」标 `[判断]` | **错**。`FOFX_ADDUNDORECORD (0x20000000)` 就是把操作放进 Shell 撤销栈（官方文档："should be placed on the undo stack, preferred to FOF_ALLOWUNDO"）。实测：改名进程退出后，资源管理器 `Ctrl+Z` 仍能撤回，一次一批、LIFO |
-| 2 | §8.9.2 | flags 里"有意不加 `FOF_ALLOWUNDO`（撤销我们自己记）" | 改为 **`FOFX_ADDUNDORECORD`**（正向改名加，journal 驱动的反向执行不加，否则会多出"撤销的撤销"记录） |
-| 3 | §8.9.2 / §8.10.4 | CaseOnly 项走 `File.Move` 两步中转 | **整条作废**。实测 `File.Move` 与 `IFileOperation::RenameItem` 都能直接做仅大小写改名（**文件与目录**都行）；而 `File.Move` 动不了目录，旧实现让「文件夹名只改大小写」必然失败。现在所有项一律进同一个 `IFileOperation` 队列 |
-| 4 | §8.9.1 | 未调 `SetOwnerWindow` | 补上。否则 UAC 提示框与 Shell 错误框没有 owner，可能弹在窗口后面 |
-| 5 | §8.10.1 | 20 个 journal、7 天有效期、`RuleSummary` 用于列表 | 降级为**单次操作事务日志**：只有一个 `last-batch.json`（覆盖写）。删掉 7 天判定、`Prune(20)`、多批次列表。journal 只留两个职能：write-ahead 崩溃标记 + 软件内「撤销」按钮 |
-| 6 | §8.10.2 | 崩溃恢复对话框调 `UndoAsync`，而 `UndoAsync` 明确拒绝 `Pending` | 新增 **`RollbackPendingAsync`**：回滚按钮 100% 失败的问题（旧版实测 `Rejected=True`）修好 |
-| 7 | §8.10.3 | 撤销部分失败也无条件写 `Undone` | 只有**全部成功**才定格 `Undone`；部分失败保留原状态，允许重试。新增「已是原名」计数，避免重试时把已回滚项误报成"已失效" |
-| 8 | §8.9.5 / §7.6 | 软件内撤销按钮只认内存里的 `_lastJournal`，关窗重开即失效 | 启动时 `LoadLast()` 挂回最近一批（`Applied` 才点亮按钮） |
-| 9 | §7.4 | 执行前不刷引擎，150ms 防抖窗口内点「执行」会用旧规则 | `OnExecute` 开头 `_debounce.Stop(); RefreshPreview();` |
-| 10 | §8.10.1 | 示例 JSON 用 camelCase | 实际落盘是 PascalCase（System.Text.Json 默认不改名），示例已按实际输出更正 |
-| 11 | §7.3 / §8.9.5 | `OnExecute` 是裸 `async void`：任何异常都冒到 DispatcherQueue → 进程静默消失，journal 永久卡 Pending | 加 try/catch：按**磁盘现状**回写逐项 `Ok`（`ReconcileFromDisk`）、写 `Error` 字段、日志落 `app.log`、窗口存活。App 另挂三个异常兜底钩子（Application / AppDomain / TaskScheduler） |
-| 12 | §8.8 | 自动编号用**改名前**的 `item.Ext` 反推 stem → 改扩展名时产出 `a.md (1).txt`（编号跑到扩展名之后，扩展名还被打回原样） | 改为 `NameSplitter.Split(item.NewName, …)`，编号加在新扩展名之前 |
-
-## v1.7 修订记录（2026-11-01：内存实测，证伪 x:Bind 优化方向）
-
-v1.7 来自一次受控 A/B 实验：把行模板的 7 处 `{Binding}` 全部换成静态文本后对比内存。
-
-| # | 位置 | v1.6 的问题 | v1.7 更正 |
-|---|---|---|---|
-| 1 | §7.8.1 | 分场景预算仍是 v1.0 的 `[判断]` 推算值（50–70MB / 65–95MB） | 全部换成实测（私有提交）：空窗 **114MB**、500 项 **135MB**、2000 项 138MB、5000 项 **143MB** |
-| 2 | §7.8.7 | v1.3 判断「5000 项多出的 ~94MB 来自 `RenameItem` 与 ListView 的绑定/布局对象」，并把「改 `x:Bind`」列为优化方向 | **实测证伪**：绑定层总开销**仅 2MB**（186 → 184MB），每项数据仅 1.8KB（500→5000 项只涨 8MB），列表首屏固定开销 21MB。`x:Bind` / 抽 `UserControl` 是**CPU 优化**（省反射），不是内存优化，已从待办移除 |
-| 3 | §7.8.7 红线 | 无「有没有列表」这个维度 | 新增：空窗 → 显示列表的 **+21MB 固定开销与项数无关**，优化逐项成本没有空间 |
-| 13 | §6.4 | 安装脚本 `Get-Content -Raw` 未指定编码；清单是无 BOM 的 UTF-8，PS 5.1 按 GBK 解码 → `[xml]` 抛异常、脚本停在第 28 行 | 显式 `-Encoding UTF8`（两处），两个 `.ps1` 改存 **UTF-8 with BOM**（PS 5.1 对无 BOM 脚本按 ANSI 解码，中文注释可能吃掉后续行） |
-| 14 | §8.4 / §7.4 | `IsRenamed` 项在 `RenameEngine.Run` 里被直接 `continue` 跳过：同一窗口内**永远无法二次改名**，用户感知为"改过的项被锁定" | `IsRenamed` 降级为**显示标记**：项照常参与规则计算；只有"当前规则对它无作用"时才回显 `State=Renamed` / 「已改名」。二次改名恢复可用 |
-| 15 | §8.8 | 只查了「批内互撞」和「磁盘已存在」，**没查批内循环**：`a→b` + `b→a` 两项都被"源名会让出"放行，执行时 Shell 在 `FOF_NOCONFIRMATION` 下静默覆盖（实测原 `b.txt` 内容永久消失） | 新增 `MarkBatchCycles`：沿"目标名 = 另项源名"走，走回本轮起点即成环，整环标 `ConflictInBatch` / 「批内循环改名」。O(n)，链不误伤 |
-| 16 | §8.9.2 | 入队顺序就是列表顺序；链式改名 `a→b` + `b→c` 若先执行 `a→b`，`b` 的原内容被静默覆盖 | 入队前 `OrderByDependency` 做依赖排序（目标是别人的源名 → 别人先动）；无依赖时保持原顺序，零成本 |
-| 17 | §8.9.4 | v1.2 决定"不实现 sink，执行后按名字校验" | 改为**实现 `IFileOperationProgressSink::PostRenameItem`**：逐项成败与 HRESULT 由 Shell 直接给。删掉 O(n²) 的名字校验（实测 4000 项约 2.9s、撤销翻倍），也修掉"链式改名把成功的项误报失败"；`CaseOnly` 项另外用 `ExistsExact` 复核一次 |
-| 18 | §7.4 / §8.9.5 | 执行后无条件清空查找/替换框（v1.4 的取舍：当时改过的项被锁定，清空只是"眼不见"） | **不再清空**。P1-7 之后已改名项照常参与计算，清空只会丢掉用户刚输入的内容（失败项无法直接重试，想再套一轮得重敲）。规则留着时，已改名项不命中规则会回显「已改名」，命中就如实显示"还会再改一次" |
-| 19 | §8.11 | 只有单层 150ms 防抖，且 `RefreshPreview` 内含整目录枚举：每敲一个字都要枚举一遍所有涉及目录 | **两层防抖落地**：150ms 纯内存（规则 + 批内互撞/环）+ 400ms 磁盘检查（`Run(..., checkDisk: false)`）。执行前仍强制跑一次完整校验，不会拿"没查过磁盘"的状态去改文件 |
-| 20 | §7.5 | `Ctrl+A` / `Space` 改完勾选后「全选」复选框状态不同步；`Esc` 直接关窗，未执行的规则白敲 | 复选框改三态并与列表同步（`SyncSelectAllBox`）；有未执行改动时 `Esc` 弹二次确认 |
-| 21 | §7.4 | 状态色硬编码、浅色主题下绿/黄对比度不足；`AppWindow.Resize` 用物理像素，150% 缩放下窗口只有 787×480 DIP | 颜色优先取 `SystemFillColor*Brush` 主题资源（取不到才退回固定色）；窗口尺寸按 `GetDpiForWindow` 换算 |
-| 22 | §5.5 / §6.7 | 单实例管道 `while(true)` 无退避（持续失败会吃满一个核）；`active.pid` 永不清理（`Dispose` 无人调用）；csproj 里留着「临时」的 `EmitCompilerGeneratedFiles` | 失败按 250ms×(次数) 退避并写 `app.log`（上限 4s）；`Window.Closed` → `Dispose` 清 pid + 释放 mutex；删掉临时开关（需要时命令行加 `-p:EmitCompilerGeneratedFiles=true`） |
-| 23 | §8.9.5 / §8.11 | 执行期只有不确定态进度环、没有取消按钮；`CancellationToken` 接受但没人用 | **逐项进度 + 取消落地**：sink 的 `PostRenameItem` 按 ~100 次/批 上报 `(完成, 总数)`，UI 切线程画确定态进度条并显示「正在改名 34 / 96 …」；「取消」置位令牌 → `PreRenameItem` 抛 → Shell 停后续。**坑**：此时 `PerformOperations()` 不返回错误码，而是把失败 HRESULT 变成 `OperationCanceledException` 抛出，必须就地捕获，否则会被当成"执行中断" |
-| 24 | §7.4 / §7.8.7 | 行内勾选用 `CheckBox`；5000 项实测 180MB | **换成 Border + FontIcon 指示灯 + 整行命中**（`BoolToVisibilityConverter`）。实测分解：空窗 110.4MB；显示 10 项 133MB；显示 200/1000/5000 项 179.6/177/180MB —— 即"每项一个容器"并不成立（项数翻 25 倍内存不变），真正贵的是**每个已实现行的 `CheckBox`**。换掉后 5000 项 **137MB**（−43MB）。<br>**两个坑**：① `ListViewItem` 会吃掉子元素的 `Tapped`，只能走 `ListView.ItemClick`；② `ItemClick` 不给点击位置，用 `PointerPressed`（`handledEventsToo: true`）记下 x，落在左侧 56px 勾选列内才切换，其余位置保持"选中"。<br>**推论**：`x:Bind` / `UserControl` / `ItemsRepeater` 都压不动这笔开销，因为它们优化的是逐项容器与绑定，而瓶颈是行内模板化控件 |
-| 25 | §7.4 | 行模板允许"4 个叶子控件"的表述已被实测推翻 | 规则改为：**行内只允许叶子元素（`TextBlock`/`FontIcon`/`Border`），禁止任何模板化控件**（`CheckBox`/`ToggleButton`/`Button`）。需要交互时走 `ItemClick` + `PointerPressed` 记 x 判列（见 #24），不要直接给叶子元素挂 `Tapped` |
-| 26 | §7.4 | 用户要求"不用官方组件，但形态和官方完全一致" | 用两个 `Border`（未勾选/已勾选各一层，`Visibility` 二选一）+ `FontIcon` 复刻官方 CheckBox。**像素级对齐**（同窗口对照官方「全选」实测，1.25 缩放）：20×20 DIP 方框、`ControlCornerRadius` 圆角；勾选态 `AccentFillColorDefaultBrush` 填充（两侧实测同为 `(228,164,124)`）、`E73E` 勾字形 12px + `TextOnAccentFillColorPrimaryBrush`；**未勾选态必须 `Transparent` 填充**（官方内部像素与背后面板只差 3；铺 `ControlFillColorDefaultBrush` 会明显发白）；描边 `ControlStrongStrokeColorDefaultBrush`。代价 **139MB**（简单版 137MB、官方 `CheckBox` 180MB）。<br>**坑**：`CheckBoxFillUnchecked`/`CheckBoxStrokeChecked`/`CheckBoxForegroundChecked` 这些键是 **UWP 命名，WinUI 3 里不存在**，`ThemeResource` 解析期直接抛 `Cannot find a Resource`，进程起来就崩（见 `app.log`）。<br>**仅剩差异**：官方有 PointerOver/Pressed 颜色过渡动画，这里没有——要那层动画就必须换回模板化控件（内存回到 180MB 量级） |
-| 27 | §7.4 状态列 | 代码里"优先取系统主题资源、取不到退回写死 RGB"，实际**一直走写死**：`Application.Current.Resources` 不含系统主题字典（查不到）；缓存按 `Application.RequestedTheme` 判深浅且切主题不清缓存 | 改成**颜色由 XAML 声明、代码只取对象**：`RootGrid.Resources` 里声明 5 个 `SolidColorBrush`，`Color="{ThemeResource SystemFillColorCritical/Caution/Success/TextFillColorSecondary}"`；`Renamed` 用资源别名 `<StaticResource x:Key="RowStateAccent" ResourceKey="AccentTextFillColorPrimaryBrush" />`（`AccentTextFillColorPrimary` 这个 **Color** 键在 WinUI 3 里不存在）。转换器只按 key 从窗口资源取，**不缓存**（缓存会把旧 brush 钉死，切主题不生效）。实测五支：`#C5FFFFFF / #FF6CCB5F / #FFFCE100 / #FFFF99A4 / #FFF3C59B` |
-| 28 | §7.4 全选 | `IsThreeState="True"` + `Checked/Unchecked/Indeterminate` 回调：点击循环是 false→true→null→false，从"全勾"点一下会落到 `null`，而处理器对 `null` 直接 return → 框停在中间态、列表毫无变化（假死） | 改 `Click="OnSelectAllClick"`：中间态**只用于显示**（部分勾选），点击意图一律从列表真实状态推断（不是全勾→全勾；已全勾→全不勾），处理完立刻 `SyncSelectAllBox()` 纠正显示。实测两次点击：全勾 ↔ 全不勾，中间态不再被用户点出来 |
-| 29 | §7.4 表头 | 列头放在 `ListView.Header` 里，跟着列表一起滚走，5000 项时对不上位 | 移出列表改成固定行（`Border` + 三列，列宽与行模板一致 `40/*/28/*/110`），底部加 1px `CardStrokeColorDefaultBrush` 分隔线；列表移到第 2 行、结果条第 3 行 |
-| 30 | §8.9.5 失败清单 | 底栏只能显示首条失败原因，其余项只在状态列有红字 | 执行完（`finally` 里 `SetBusy(false)` 之后）弹 `ContentDialog`：逐项列「原名 → 新名 + 原因」，最多 200 行，超出提示用「复制清单」（`DataPackage` + `Clipboard`）带走全部。**坑**：不能在 `try` 里 `await` 对话框——`SetBusy(false)` 在 `finally`，会被对话框挡住，表现为弹窗时底栏还写着「正在改名 N / N」且取消按钮还亮着 |
-| 31 | §4.3 分层 | `RenameEngine` 465 行：名字计算（`BuildNewName`）、合法性（`Validate`）与冲突判定（批内互撞/循环/磁盘/自动编号）混在一起 | 抽出 `Core/ConflictResolver.cs`（227 行，`internal static`）：只关心"名字之间/名字与磁盘"的冲突，契约是**只读入参列表、就地写回 State/Message/NewName**，不碰规则、不写磁盘；`RenameEngine` 降到 262 行。调用顺序在 `Run()` 里显式保留：互撞 → 循环 → 磁盘 → 编号。**坑**：搬过去的方法默认还是 `private`，要在 `ConflictResolver` 里改成 `internal`，否则 `Run()` 直接编译不过 |
-| 32 | §9 测试 | 124 条断言只有 console 入口，没有 `dotnet test`、没有 CI | 断言体抽成 `tests/BatchRename.Core.Tests/CoreSuite.cs`（**唯一实现**，`CoreSuite.RunAsync(report)` 返回 `(Checks, Failures)`）：console 入口 `BatchRename.ShellTest` 只负责逐条打印，xUnit 入口 `CoreSuiteTests` 断言`Failures == 0` 且 `Checks == 124`（条数守卫，防止悄悄少跑）。加 `.github/workflows/ci.yml`（windows-latest：test + App build + console build）。**坑**：① xUnit 项目必须和 ShellTest 一样带 `Microsoft.Windows.CsWin32` + 同一份 `NativeMethods.txt`，否则 Core 里的 `IShellItem`/`PCWSTR`/`HRESULT` 全找不到；② 断言里有 `await`，`Run` 必须是 `async Task<Result>`；③ `Console.WriteLine()` 被批量改成 `Note()` 后要给它默认参数；④ CI **不要** `dotnet build BatchRename.sln`——C++ 的 `BatchRename.Shell.vcxproj` 需要 MSBuild.exe/VS 工具链，dotnet CLI 会报 `VCTargetsPath` 缺失 |
-
-> 断言测试同步扩到 **124 项**（新增：15 组 Pending 回滚 10 项、16 组目录/文件大小写改名 6 项、14 组扩展名+编号 2 项、17 组中断回写 4 项、18 组二次改名 4 项、19 组链式顺序 4 项、20 组循环检测 5 项、21 组逐项失败 4 项、22 组两层防抖 3 项、23 组进度 3 项、24 组取消 3 项）。
-
----
 
 ## 目录
 
@@ -128,8 +21,10 @@ v1.7 来自一次受控 A/B 实验：把行模板的 7 处 `{Binding}` 全部换
 - [10. 26H2 适配](#10-26h2-适配)
 - [11. 风险清单与排障](#11-风险清单与排障)
 - [12. 附录](#12-附录)
+- [修订历史](#修订历史)
 
 ---
+
 
 ## 0. 文档说明
 
@@ -2073,7 +1968,7 @@ M1 卡住时的排障顺序（别乱猜）：
 
 验收（用固定样本集，建议放在 `docs\samples\`）。
 
-**状态说明**：下表打 ✅ 的项由 `src/BatchRename.ShellTest` 的 **33 项自动断言**验证（不依赖 UI）；标 ⏳ 的项需要人工在界面上确认。
+**状态说明**：下表打 ✅ 的项由 `tests/BatchRename.Core.Tests` 的 **124 项自动断言**验证（不依赖 UI）；标 ⏳ 的项需要人工在界面上确认。
 
 - [x] 200 个混合样本（中文 / 空格 / 多扩展名 / dotfile / 无扩展名 / 文件夹）载入后产出正确
       → 断言通过（引擎层，0ms）；⏳ 两栏**显示**效果待人工确认
@@ -2350,25 +2245,13 @@ ie4uinit.exe -show
 - 所有 `[判断]` 结论必须在 Windows 上实测。特别是：`IFileOperation` 对仅大小写改名的内部处理、`ThreadingModel="Both"` 的实际行为、`ms-settings:personalization-contextmenu` 这个 slug 是否有效。
 - 26H2 的右键菜单仍在灰度推送（Controlled Feature Rollout），不同机器同一 build 的菜单形态可能不同。验收时以自己机器的实际行为为准，不要拿别人的截图对照。
 
-## v1.10 补充（2026-11-01：跨位置安装 + 单文件安装器）
 
-| # | 位置 | 问题 | 更正 |
-|---|---|---|---|
-| 1 | §6.2 安装 | 旧包处理只看 `Identity`/`Publisher` | **还要看安装位置**。稀疏包绑死绝对路径，从 `E:\Project\...\packaging` 装过的包不能直接从 `%LOCALAPPDATA%\...\packaging` 重注册，会报 `0x80073D0B`（"无法移动，因为该程序包正被使用或安装在其它外部位置"）。脚本现在比较 `Get-AppxPackage.InstallLocation` 与清单目录 |
-| 2 | §6.2 安装 | 卸载前不停进程 | `Remove-AppxPackage` 在 dllhost 加载着 Shell DLL 时会报 `0x80073D02`。卸载前必须先停 App 进程 + 按模块名过滤停 dllhost |
-| 3 | §6.2 分发 | 只有 zip + 脚本 | 新增 `tools/Build-Setup.ps1`：把 payload 内嵌进一个自包含单文件 exe（约 96MB），双击即装、写「应用和功能」条目、支持 `/S` 静默模式 |
+---
 
-## v1.11 补充（2026-11-02：文档收尾与工程清理）
+## 修订历史
 
-本轮不涉及功能变更，只做文档结构整理与残留清理。
-
-| # | 位置 | 变化 |
-|---|---|---|
-| 1 | `README.md` | 重写为**面向用户**：功能、安装、使用、快捷键、常见问题、系统要求、已知限制。技术内容（环境要求、构建、测试、打包、目录结构、维护约定）全部移交 ARCHITECTURE |
-| 2 | `docs/ARCHITECTURE.md` | 新增 §6.1 与 PowerRename 的对照、§7.1 环境要求、§7.3 测试、§7.4 打包、§10 踩坑清单；§9 由「扩展点」改为「里程碑状态与后续方向」 |
-| 3 | `docs/REVIEW-2026-11-01.md` | 693 行的评审记录，架构级结论并入 ARCHITECTURE（§6.1 / §10），问题修复记录并入本文 v1.5–v1.10，原文件删除 |
-| 4 | 断言数 | 全库统一为 **124 项**（此前 33 / 67 / 79 / 118 多个版本并存） |
-| 5 | 过时标记 | M1 验收里的「Shift+右键 传统 verb」由 `[ ] 未实现` 改为 `[x] 有意不做` 并写明原因 |
+> 按时间**倒序**排列，最新的在最前。编号在各版本内独立。
+> 正文里的 `🔧 vX.Y` 标注指向这里的对应条目。
 
 ## v1.12 补充（2026-11-02：文档与代码对齐 + 校验脚本）
 
@@ -2383,3 +2266,165 @@ ie4uinit.exe -show
 | 5 | README | 「失败提示只显示首条原因」（实际是 ≤200 行的失败清单）、「图标旧了就重启资源管理器」（实测还要 kill `dllhost.exe`）、递归限制与常见问题重复 | 三处纠正，删重复段 |
 | 6 | ARCHITECTURE §7.2 / §7.5 | 产物图里有 `packaging/Assets → bin/publish/Assets` 的箭头，却没写谁拷的、不拷会怎样 | 补「由 Install-Sparse.ps1 注册前拷贝」+ 换图标后要清 dllhost 图标缓存；新增 §7.5 文档校验 |
 | 7 | `ConflictResolver.cs` | 注释引用已删除评审文档的 P3 TODO | 去掉引用，保留抽取理由 |
+
+
+
+## v1.11 补充（2026-11-02：文档收尾与工程清理）
+
+本轮不涉及功能变更，只做文档结构整理与残留清理。
+
+| # | 位置 | 变化 |
+|---|---|---|
+| 1 | `README.md` | 重写为**面向用户**：功能、安装、使用、快捷键、常见问题、系统要求、已知限制。技术内容（环境要求、构建、测试、打包、目录结构、维护约定）全部移交 ARCHITECTURE |
+| 2 | `docs/ARCHITECTURE.md` | 新增 §6.1 与 PowerRename 的对照、§7.1 环境要求、§7.3 测试、§7.4 打包、§10 踩坑清单；§9 由「扩展点」改为「里程碑状态与后续方向」 |
+| 3 | `docs/REVIEW-2026-11-01.md` | 693 行的评审记录，架构级结论并入 ARCHITECTURE（§6.1 / §10），问题修复记录并入本文 v1.5–v1.10，原文件删除 |
+| 4 | 断言数 | 全库统一为 **124 项**（此前 33 / 67 / 79 / 118 多个版本并存） |
+| 5 | 过时标记 | M1 验收里的「Shift+右键 传统 verb」由 `[ ] 未实现` 改为 `[x] 有意不做` 并写明原因 |
+
+
+## v1.10 补充（2026-11-01：跨位置安装 + 单文件安装器）
+
+| # | 位置 | 问题 | 更正 |
+|---|---|---|---|
+| 1 | §6.2 安装 | 旧包处理只看 `Identity`/`Publisher` | **还要看安装位置**。稀疏包绑死绝对路径，从 `E:\Project\...\packaging` 装过的包不能直接从 `%LOCALAPPDATA%\...\packaging` 重注册，会报 `0x80073D0B`（"无法移动，因为该程序包正被使用或安装在其它外部位置"）。脚本现在比较 `Get-AppxPackage.InstallLocation` 与清单目录 |
+| 2 | §6.2 安装 | 卸载前不停进程 | `Remove-AppxPackage` 在 dllhost 加载着 Shell DLL 时会报 `0x80073D02`。卸载前必须先停 App 进程 + 按模块名过滤停 dllhost |
+| 3 | §6.2 分发 | 只有 zip + 脚本 | 新增 `tools/Build-Setup.ps1`：把 payload 内嵌进一个自包含单文件 exe（约 96MB），双击即装、写「应用和功能」条目、支持 `/S` 静默模式 |
+
+
+
+## v1.7 修订记录（2026-11-01：内存实测，证伪 x:Bind 优化方向）
+
+v1.7 来自一次受控 A/B 实验：把行模板的 7 处 `{Binding}` 全部换成静态文本后对比内存。
+
+| # | 位置 | v1.6 的问题 | v1.7 更正 |
+|---|---|---|---|
+| 1 | §7.8.1 | 分场景预算仍是 v1.0 的 `[判断]` 推算值（50–70MB / 65–95MB） | 全部换成实测（私有提交）：空窗 **114MB**、500 项 **135MB**、2000 项 138MB、5000 项 **143MB** |
+| 2 | §7.8.7 | v1.3 判断「5000 项多出的 ~94MB 来自 `RenameItem` 与 ListView 的绑定/布局对象」，并把「改 `x:Bind`」列为优化方向 | **实测证伪**：绑定层总开销**仅 2MB**（186 → 184MB），每项数据仅 1.8KB（500→5000 项只涨 8MB），列表首屏固定开销 21MB。`x:Bind` / 抽 `UserControl` 是**CPU 优化**（省反射），不是内存优化，已从待办移除 |
+| 3 | §7.8.7 红线 | 无「有没有列表」这个维度 | 新增：空窗 → 显示列表的 **+21MB 固定开销与项数无关**，优化逐项成本没有空间 |
+## v1.6 修订记录（2026-11-01：评审问题集中修复，编号延续 v1.5 表）
+
+| # | 位置 | 问题 | 更正 |
+|---|---|---|---|
+| 13 | §6.4 | 安装脚本 `Get-Content -Raw` 未指定编码；清单是无 BOM 的 UTF-8，PS 5.1 按 GBK 解码 → `[xml]` 抛异常、脚本停在第 28 行 | 显式 `-Encoding UTF8`（两处），两个 `.ps1` 改存 **UTF-8 with BOM**（PS 5.1 对无 BOM 脚本按 ANSI 解码，中文注释可能吃掉后续行） |
+| 14 | §8.4 / §7.4 | `IsRenamed` 项在 `RenameEngine.Run` 里被直接 `continue` 跳过：同一窗口内**永远无法二次改名**，用户感知为"改过的项被锁定" | `IsRenamed` 降级为**显示标记**：项照常参与规则计算；只有"当前规则对它无作用"时才回显 `State=Renamed` / 「已改名」。二次改名恢复可用 |
+| 15 | §8.8 | 只查了「批内互撞」和「磁盘已存在」，**没查批内循环**：`a→b` + `b→a` 两项都被"源名会让出"放行，执行时 Shell 在 `FOF_NOCONFIRMATION` 下静默覆盖（实测原 `b.txt` 内容永久消失） | 新增 `MarkBatchCycles`：沿"目标名 = 另项源名"走，走回本轮起点即成环，整环标 `ConflictInBatch` / 「批内循环改名」。O(n)，链不误伤 |
+| 16 | §8.9.2 | 入队顺序就是列表顺序；链式改名 `a→b` + `b→c` 若先执行 `a→b`，`b` 的原内容被静默覆盖 | 入队前 `OrderByDependency` 做依赖排序（目标是别人的源名 → 别人先动）；无依赖时保持原顺序，零成本 |
+| 17 | §8.9.4 | v1.2 决定"不实现 sink，执行后按名字校验" | 改为**实现 `IFileOperationProgressSink::PostRenameItem`**：逐项成败与 HRESULT 由 Shell 直接给。删掉 O(n²) 的名字校验（实测 4000 项约 2.9s、撤销翻倍），也修掉"链式改名把成功的项误报失败"；`CaseOnly` 项另外用 `ExistsExact` 复核一次 |
+| 18 | §7.4 / §8.9.5 | 执行后无条件清空查找/替换框（v1.4 的取舍：当时改过的项被锁定，清空只是"眼不见"） | **不再清空**。P1-7 之后已改名项照常参与计算，清空只会丢掉用户刚输入的内容（失败项无法直接重试，想再套一轮得重敲）。规则留着时，已改名项不命中规则会回显「已改名」，命中就如实显示"还会再改一次" |
+| 19 | §8.11 | 只有单层 150ms 防抖，且 `RefreshPreview` 内含整目录枚举：每敲一个字都要枚举一遍所有涉及目录 | **两层防抖落地**：150ms 纯内存（规则 + 批内互撞/环）+ 400ms 磁盘检查（`Run(..., checkDisk: false)`）。执行前仍强制跑一次完整校验，不会拿"没查过磁盘"的状态去改文件 |
+| 20 | §7.5 | `Ctrl+A` / `Space` 改完勾选后「全选」复选框状态不同步；`Esc` 直接关窗，未执行的规则白敲 | 复选框改三态并与列表同步（`SyncSelectAllBox`）；有未执行改动时 `Esc` 弹二次确认 |
+| 21 | §7.4 | 状态色硬编码、浅色主题下绿/黄对比度不足；`AppWindow.Resize` 用物理像素，150% 缩放下窗口只有 787×480 DIP | 颜色优先取 `SystemFillColor*Brush` 主题资源（取不到才退回固定色）；窗口尺寸按 `GetDpiForWindow` 换算 |
+| 22 | §5.5 / §6.7 | 单实例管道 `while(true)` 无退避（持续失败会吃满一个核）；`active.pid` 永不清理（`Dispose` 无人调用）；csproj 里留着「临时」的 `EmitCompilerGeneratedFiles` | 失败按 250ms×(次数) 退避并写 `app.log`（上限 4s）；`Window.Closed` → `Dispose` 清 pid + 释放 mutex；删掉临时开关（需要时命令行加 `-p:EmitCompilerGeneratedFiles=true`） |
+| 23 | §8.9.5 / §8.11 | 执行期只有不确定态进度环、没有取消按钮；`CancellationToken` 接受但没人用 | **逐项进度 + 取消落地**：sink 的 `PostRenameItem` 按 ~100 次/批 上报 `(完成, 总数)`，UI 切线程画确定态进度条并显示「正在改名 34 / 96 …」；「取消」置位令牌 → `PreRenameItem` 抛 → Shell 停后续。**坑**：此时 `PerformOperations()` 不返回错误码，而是把失败 HRESULT 变成 `OperationCanceledException` 抛出，必须就地捕获，否则会被当成"执行中断" |
+| 24 | §7.4 / §7.8.7 | 行内勾选用 `CheckBox`；5000 项实测 180MB | **换成 Border + FontIcon 指示灯 + 整行命中**（`BoolToVisibilityConverter`）。实测分解：空窗 110.4MB；显示 10 项 133MB；显示 200/1000/5000 项 179.6/177/180MB —— 即"每项一个容器"并不成立（项数翻 25 倍内存不变），真正贵的是**每个已实现行的 `CheckBox`**。换掉后 5000 项 **137MB**（−43MB）。<br>**两个坑**：① `ListViewItem` 会吃掉子元素的 `Tapped`，只能走 `ListView.ItemClick`；② `ItemClick` 不给点击位置，用 `PointerPressed`（`handledEventsToo: true`）记下 x，落在左侧 56px 勾选列内才切换，其余位置保持"选中"。<br>**推论**：`x:Bind` / `UserControl` / `ItemsRepeater` 都压不动这笔开销，因为它们优化的是逐项容器与绑定，而瓶颈是行内模板化控件 |
+| 25 | §7.4 | 行模板允许"4 个叶子控件"的表述已被实测推翻 | 规则改为：**行内只允许叶子元素（`TextBlock`/`FontIcon`/`Border`），禁止任何模板化控件**（`CheckBox`/`ToggleButton`/`Button`）。需要交互时走 `ItemClick` + `PointerPressed` 记 x 判列（见 #24），不要直接给叶子元素挂 `Tapped` |
+| 26 | §7.4 | 用户要求"不用官方组件，但形态和官方完全一致" | 用两个 `Border`（未勾选/已勾选各一层，`Visibility` 二选一）+ `FontIcon` 复刻官方 CheckBox。**像素级对齐**（同窗口对照官方「全选」实测，1.25 缩放）：20×20 DIP 方框、`ControlCornerRadius` 圆角；勾选态 `AccentFillColorDefaultBrush` 填充（两侧实测同为 `(228,164,124)`）、`E73E` 勾字形 12px + `TextOnAccentFillColorPrimaryBrush`；**未勾选态必须 `Transparent` 填充**（官方内部像素与背后面板只差 3；铺 `ControlFillColorDefaultBrush` 会明显发白）；描边 `ControlStrongStrokeColorDefaultBrush`。代价 **139MB**（简单版 137MB、官方 `CheckBox` 180MB）。<br>**坑**：`CheckBoxFillUnchecked`/`CheckBoxStrokeChecked`/`CheckBoxForegroundChecked` 这些键是 **UWP 命名，WinUI 3 里不存在**，`ThemeResource` 解析期直接抛 `Cannot find a Resource`，进程起来就崩（见 `app.log`）。<br>**仅剩差异**：官方有 PointerOver/Pressed 颜色过渡动画，这里没有——要那层动画就必须换回模板化控件（内存回到 180MB 量级） |
+| 27 | §7.4 状态列 | 代码里"优先取系统主题资源、取不到退回写死 RGB"，实际**一直走写死**：`Application.Current.Resources` 不含系统主题字典（查不到）；缓存按 `Application.RequestedTheme` 判深浅且切主题不清缓存 | 改成**颜色由 XAML 声明、代码只取对象**：`RootGrid.Resources` 里声明 5 个 `SolidColorBrush`，`Color="{ThemeResource SystemFillColorCritical/Caution/Success/TextFillColorSecondary}"`；`Renamed` 用资源别名 `<StaticResource x:Key="RowStateAccent" ResourceKey="AccentTextFillColorPrimaryBrush" />`（`AccentTextFillColorPrimary` 这个 **Color** 键在 WinUI 3 里不存在）。转换器只按 key 从窗口资源取，**不缓存**（缓存会把旧 brush 钉死，切主题不生效）。实测五支：`#C5FFFFFF / #FF6CCB5F / #FFFCE100 / #FFFF99A4 / #FFF3C59B` |
+| 28 | §7.4 全选 | `IsThreeState="True"` + `Checked/Unchecked/Indeterminate` 回调：点击循环是 false→true→null→false，从"全勾"点一下会落到 `null`，而处理器对 `null` 直接 return → 框停在中间态、列表毫无变化（假死） | 改 `Click="OnSelectAllClick"`：中间态**只用于显示**（部分勾选），点击意图一律从列表真实状态推断（不是全勾→全勾；已全勾→全不勾），处理完立刻 `SyncSelectAllBox()` 纠正显示。实测两次点击：全勾 ↔ 全不勾，中间态不再被用户点出来 |
+| 29 | §7.4 表头 | 列头放在 `ListView.Header` 里，跟着列表一起滚走，5000 项时对不上位 | 移出列表改成固定行（`Border` + 三列，列宽与行模板一致 `40/*/28/*/110`），底部加 1px `CardStrokeColorDefaultBrush` 分隔线；列表移到第 2 行、结果条第 3 行 |
+| 30 | §8.9.5 失败清单 | 底栏只能显示首条失败原因，其余项只在状态列有红字 | 执行完（`finally` 里 `SetBusy(false)` 之后）弹 `ContentDialog`：逐项列「原名 → 新名 + 原因」，最多 200 行，超出提示用「复制清单」（`DataPackage` + `Clipboard`）带走全部。**坑**：不能在 `try` 里 `await` 对话框——`SetBusy(false)` 在 `finally`，会被对话框挡住，表现为弹窗时底栏还写着「正在改名 N / N」且取消按钮还亮着 |
+| 31 | §4.3 分层 | `RenameEngine` 465 行：名字计算（`BuildNewName`）、合法性（`Validate`）与冲突判定（批内互撞/循环/磁盘/自动编号）混在一起 | 抽出 `Core/ConflictResolver.cs`（227 行，`internal static`）：只关心"名字之间/名字与磁盘"的冲突，契约是**只读入参列表、就地写回 State/Message/NewName**，不碰规则、不写磁盘；`RenameEngine` 降到 262 行。调用顺序在 `Run()` 里显式保留：互撞 → 循环 → 磁盘 → 编号。**坑**：搬过去的方法默认还是 `private`，要在 `ConflictResolver` 里改成 `internal`，否则 `Run()` 直接编译不过 |
+| 32 | §9 测试 | 124 条断言只有 console 入口，没有 `dotnet test`、没有 CI | 断言体抽成 `tests/BatchRename.Core.Tests/CoreSuite.cs`（**唯一实现**，`CoreSuite.RunAsync(report)` 返回 `(Checks, Failures)`）：console 入口 `BatchRename.ShellTest` 只负责逐条打印，xUnit 入口 `CoreSuiteTests` 断言`Failures == 0` 且 `Checks == 124`（条数守卫，防止悄悄少跑）。加 `.github/workflows/ci.yml`（windows-latest：test + App build + console build）。**坑**：① xUnit 项目必须和 ShellTest 一样带 `Microsoft.Windows.CsWin32` + 同一份 `NativeMethods.txt`，否则 Core 里的 `IShellItem`/`PCWSTR`/`HRESULT` 全找不到；② 断言里有 `await`，`Run` 必须是 `async Task<Result>`；③ `Console.WriteLine()` 被批量改成 `Note()` 后要给它默认参数；④ CI **不要** `dotnet build BatchRename.sln`——C++ 的 `BatchRename.Shell.vcxproj` 需要 MSBuild.exe/VS 工具链，dotnet CLI 会报 `VCTargetsPath` 缺失 |
+
+> 断言测试同步扩到 **124 项**（新增：15 组 Pending 回滚 10 项、16 组目录/文件大小写改名 6 项、14 组扩展名+编号 2 项、17 组中断回写 4 项、18 组二次改名 4 项、19 组链式顺序 4 项、20 组循环检测 5 项、21 组逐项失败 4 项、22 组两层防抖 3 项、23 组进度 3 项、24 组取消 3 项）。
+
+---
+
+## 目录
+
+- [0. 文档说明](#0-文档说明)
+- [1. 需求与范围](#1-需求与范围)
+- [2. 技术选型](#2-技术选型)
+- [3. 系统架构](#3-系统架构)
+- [4. 工程结构](#4-工程结构)
+- [5. Shell 扩展规格](#5-shell-扩展规格)
+- [6. 打包与注册](#6-打包与注册)
+- [7. 主程序规格](#7-主程序规格)
+- [8. 重命名引擎规格](#8-重命名引擎规格)
+- [9. 里程碑与验收](#9-里程碑与验收)
+- [10. 26H2 适配](#10-26h2-适配)
+
+
+## v1.5 修订记录（2026-11-01：系统级撤销、journal 降级、CaseOnly 两步作废）
+
+v1.5 依据真实 `IFileOperation` 探针 + 资源管理器实发 `Ctrl+Z` 的端到端实测修订（探针方法与结论见 ARCHITECTURE §10）。
+
+| # | 位置 | v1.4 的问题 | v1.5 更正 |
+|---|---|---|---|
+| 1 | §0.3 第 8 条 | 「Explorer 的系统级 Ctrl+Z 无法撤销其它进程发起的批量重命名」标 `[判断]` | **错**。`FOFX_ADDUNDORECORD (0x20000000)` 就是把操作放进 Shell 撤销栈（官方文档："should be placed on the undo stack, preferred to FOF_ALLOWUNDO"）。实测：改名进程退出后，资源管理器 `Ctrl+Z` 仍能撤回，一次一批、LIFO |
+| 2 | §8.9.2 | flags 里"有意不加 `FOF_ALLOWUNDO`（撤销我们自己记）" | 改为 **`FOFX_ADDUNDORECORD`**（正向改名加，journal 驱动的反向执行不加，否则会多出"撤销的撤销"记录） |
+| 3 | §8.9.2 / §8.10.4 | CaseOnly 项走 `File.Move` 两步中转 | **整条作废**。实测 `File.Move` 与 `IFileOperation::RenameItem` 都能直接做仅大小写改名（**文件与目录**都行）；而 `File.Move` 动不了目录，旧实现让「文件夹名只改大小写」必然失败。现在所有项一律进同一个 `IFileOperation` 队列 |
+| 4 | §8.9.1 | 未调 `SetOwnerWindow` | 补上。否则 UAC 提示框与 Shell 错误框没有 owner，可能弹在窗口后面 |
+| 5 | §8.10.1 | 20 个 journal、7 天有效期、`RuleSummary` 用于列表 | 降级为**单次操作事务日志**：只有一个 `last-batch.json`（覆盖写）。删掉 7 天判定、`Prune(20)`、多批次列表。journal 只留两个职能：write-ahead 崩溃标记 + 软件内「撤销」按钮 |
+| 6 | §8.10.2 | 崩溃恢复对话框调 `UndoAsync`，而 `UndoAsync` 明确拒绝 `Pending` | 新增 **`RollbackPendingAsync`**：回滚按钮 100% 失败的问题（旧版实测 `Rejected=True`）修好 |
+| 7 | §8.10.3 | 撤销部分失败也无条件写 `Undone` | 只有**全部成功**才定格 `Undone`；部分失败保留原状态，允许重试。新增「已是原名」计数，避免重试时把已回滚项误报成"已失效" |
+| 8 | §8.9.5 / §7.6 | 软件内撤销按钮只认内存里的 `_lastJournal`，关窗重开即失效 | 启动时 `LoadLast()` 挂回最近一批（`Applied` 才点亮按钮） |
+| 9 | §7.4 | 执行前不刷引擎，150ms 防抖窗口内点「执行」会用旧规则 | `OnExecute` 开头 `_debounce.Stop(); RefreshPreview();` |
+| 10 | §8.10.1 | 示例 JSON 用 camelCase | 实际落盘是 PascalCase（System.Text.Json 默认不改名），示例已按实际输出更正 |
+| 11 | §7.3 / §8.9.5 | `OnExecute` 是裸 `async void`：任何异常都冒到 DispatcherQueue → 进程静默消失，journal 永久卡 Pending | 加 try/catch：按**磁盘现状**回写逐项 `Ok`（`ReconcileFromDisk`）、写 `Error` 字段、日志落 `app.log`、窗口存活。App 另挂三个异常兜底钩子（Application / AppDomain / TaskScheduler） |
+| 12 | §8.8 | 自动编号用**改名前**的 `item.Ext` 反推 stem → 改扩展名时产出 `a.md (1).txt`（编号跑到扩展名之后，扩展名还被打回原样） | 改为 `NameSplitter.Split(item.NewName, …)`，编号加在新扩展名之前 |
+
+
+
+## v1.4 补充（M3 遗留项回补）
+
+| # | 位置 | 问题 | 更正 |
+|---|---|---|---|
+| 1 | §8.10.2 | 实现只写了 `state=Applied`，**没回写逐项 ok** | 已在执行后按实际结果回写。不回写的话，失败项在 journal 里仍是 `Ok=true`，撤销会去回滚根本没改名的项 |
+| 2 | §8.8 | 「自动编号」只在规格书里，未实现 | 已实现：`n=0` 先试原名（批内互撞时第一项应保留原名），之后 `stem (n).ext`，上限 999 |
+| 3 | §7.4 | 底栏缺「全选/全不选」 | 已补为 `CheckBox`，位于撤销/执行左侧；`Ctrl+A` 保留 |
+
+> 断言测试同步扩到 **79 项**（新增自动编号 9 项、Pending journal 3 项）。<br>（后续批次继续演进：92 → 102 → 115 → 118 → **124 项**，见文末 v1.5/v1.6 修订表）
+
+
+
+## v1.3 修订记录（M4 界面、单实例与实测校准）
+
+v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是实测数据对 v1.0 预估的校准**，不是代码缺陷。
+
+| # | 位置 | v1.2 的问题 | v1.3 更正 |
+|---|---|---|---|
+| 1 | §7.4 | 内容区叠 `LayerFillColorDefaultBrush` | Mica 只作整窗底层，**内容区不叠连续填充层**；否则标题栏与内容之间会出现明显色块分界，和 WinUI Gallery / PowerRename 的观感不一致 |
+| 2 | §7.4 | `MicaBackdrop Kind="BaseAlt"` | 改用默认 **`Base`**。BaseAlt 是给「选项卡式标题栏」应用增强对比用的，普通工具用它会显得材质过重 |
+| 3 | §7.4 | 标题栏 48px 高 | 系统 caption 默认 32px，两者不一致时窗口按钮与标题**垂直错位**。元素高度与 `TitleBarHeightOption.Standard` 必须同为 32px |
+| 4 | §7.4 | 规则栏横排在顶部 | 改为 PowerRename 式：左 300px 操作区（纵向）+ 右预览卡片；撤销/执行贴左栏底部，结果条固定在卡片内底部 |
+| 5 | §5.2 | `GetIcon` 返回 `exe路径,0` | 改返回独立的 **`Assets\menu.ico`**。exe 图标受 Shell 图标缓存影响，替换后菜单可能长期显示旧图，且无法把菜单图标与应用图标分开设计 |
+| 6 | §7.6 | Mutex 名 `Local\BatchRename.SingleInstance.{PackageFamilyName}` | 应用由 Shell `CreateProcess` 启动，`Package.Current` 不可用，改固定名 |
+| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（实测数据与分解都在 §7.8.7） |
+| 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。<br>🔧 **v1.9 更正**：`altform-unplated` 变体**实测未被采纳**（44/150/50 全套生成后仍带底板）。真正的解法是 `AppWindow.SetIcon()`，见 §6.1 |
+
+
+
+## v1.2 修订记录
+
+v1.2 依据 M3（执行 + 撤销）的实现与真机测试结果修订。**其中 #2 与 #5 是会导致数据丢失的严重问题**，已就地更正。
+
+| # | 位置 | v1.1 的问题 | v1.2 更正 |
+|---|---|---|---|
+| 1 | §7.1 / §8.9.3 | CsWin32 清单写 `<None Include="Core\NativeMethods.txt" />` | 必须挂 **`<AdditionalFiles>`**，否则源生成器读不到，等于没配 |
+| 2 | §8.8 | 只把「磁盘已存在」检测算作 M3 的事 | **M2 预览阶段就必须做**。缺失时改名会直接覆盖同名文件，**静默丢数据**，且用户完全无感 |
+| 3 | §8.9.2 | CaseOnly 在同一 `IFileOperation` 内连续入队两次 `RenameItem`，第二次按临时名重建 `IShellItem` | **行不通**。`PerformOperations` 之前临时文件根本不存在，`SHCreateItemFromParsingName` 返回 `0x80070002`；IFileOperation 队列无法引用前序结果。改用 `File.Move` 两步 |
+| 4 | §8.9.4 | 回调方法名写 `PostRename` | 实际接口是 **`PostRenameItem`**。本项目最终不实现 sink，改为执行后用文件系统校验结果（省掉 15 个回调方法） |
+| 5 | §8.7 / §8.10.3 | 未提大小写敏感陷阱 | **`File.Exists` 在 NTFS 上忽略大小写**，绝不能用于：① 校验「仅大小写改名」是否生效；② 判断撤销时源名是否被占用。两处都会把整批判成失败/失效 |
+| 6 | §5.2 | `GetTitle` 返回「批量重命名 (N)」 | 改为固定「批量重命名」。数量在打开的窗口里看更直观，菜单标题每次变反而干扰定位 |
+
+
+
+## v1.1 修订记录
+
+v1.1 依据 `E:\Project\BatchRename` 的**实际编译与运行结果**修订。以下 8 处均为 v1.0 写错或写漏、到实现阶段才暴露的问题，正文对应位置已就地更正并标注 `🔧 v1.1`。
+
+| # | 位置 | v1.0 的问题 | v1.1 更正 |
+|---|---|---|---|
+| 1 | §0.4 / §7.1 | 写 `Windows App SDK 2.5.x` | 实测 NuGet 最新稳定版是 **2.6.4**，已在项目中使用 |
+| 2 | §4.4 | 链接依赖漏 `user32.lib` | `MessageBoxW` 需要它，缺了直接 `LNK2019` |
+| 3 | §5.1 | 头文件声明未带 `noexcept`，但 §5.3 实现带了 | 声明与定义必须一致，否则 `C2382` |
+| 4 | §5.1 | 称 `wrl/module.h` 会自动导出三个函数 | **不会**。必须用 `.def` 或 `__declspec(dllexport)`；且签名要用 `STDAPI` 对齐 `combaseapi.h`，否则 `C2375` |
+| 5 | §5.4 | `SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0)` | **应为 `writeEnd`**。清掉 `readEnd` 的继承标志再放进 `HANDLE_LIST` 会让 `CreateProcess` 返回 87 |
+| 6 | §7.1 | 只提 `PublishSingleFile` 会导致 `0xc000027b` | WinAppSDK **2.6.4 的 publish 不生成 `resources.pri`**，非打包应用缺它必崩，已在 csproj 加 Target |
+| 7 | §8.5 | `WordSeps` 含 `'`，却要求"`don't` 不变 `Don'T`" | 自相矛盾。`'` 已移除，且非字母数字字符不改变词首状态 |
+| 8 | §5.4 / §6.7 | 日志路径写 `%LOCALAPPDATA%\BatchRename\logs\shell.log` | dllhost 在包容器内运行，实际被虚拟化到 `...\Packages\BatchRename.Shell_*\LocalCache\Local\BatchRename\logs\` |
+
+另附两条 WinUI 3 工程约束（v1.0 未提及），见 §7.4 末尾。
+
+
