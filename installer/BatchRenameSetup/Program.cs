@@ -8,7 +8,7 @@ using Microsoft.Win32;
 namespace BatchRename.Setup;
 
 /// <summary>
-/// 自解压安装器：把内嵌的 payload.zip 解到 %LOCALAPPDATA%\BatchRename\app，
+/// 自解压安装器：把内嵌的 payload.zip 解到「用户所选目录\BatchRename」，
 /// 再调用包里的 Install-Sparse.ps1 完成稀疏包注册。
 ///
 /// 为什么不做成 MSIX：真 MSIX 需要签名证书，自签证书在目标机必须被信任，
@@ -19,6 +19,10 @@ internal static class Program
     private const string AppName = "批量重命名";
     private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\BatchRename";
     private const string DevModeKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock";
+
+    // 清单里 MinVersion 也是 22H2；这里同步拦一道，避免在更旧的系统上装出一个没有菜单的软件。
+    private const int MinSupportedBuild = 22621;    // Windows 11 22H2
+    private const int NewContextMenuBuild = 26300;  // Windows 11 26H2：扩展默认收进「应用扩展」子菜单
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
@@ -107,6 +111,33 @@ internal static class Program
                         AppName + " 安装程序", MB_OK | MB_ICONERROR);
                 }
                 return 1;
+            }
+
+            var build = Environment.OSVersion.Version.Build;
+            if (build < MinSupportedBuild)
+            {
+                Say($"FAIL: Windows build {build} < {MinSupportedBuild}");
+                if (!silent)
+                {
+                    MessageBoxW(IntPtr.Zero,
+                        "需要 Windows 11 22H2（Build 22621）或更高版本。\n\n" +
+                        $"当前系统 Build {build}。",
+                        AppName + " 安装程序", MB_OK | MB_ICONERROR);
+                }
+                return 1;
+            }
+
+            if (build < NewContextMenuBuild)
+            {
+                Say($"WARN: Windows build {build} < {NewContextMenuBuild}，新式菜单项可能不进主菜单");
+                if (!silent)
+                {
+                    MessageBoxW(IntPtr.Zero,
+                        "当前系统低于 26H2（Build 26300）。\n\n" +
+                        "安装会继续，但「批量重命名」右键菜单项可能不出现在主菜单。\n" +
+                        "替代入口：右键 > 发送到 > 批量重命名。",
+                        AppName + " 安装程序", MB_OK | MB_ICONINFORMATION);
+                }
             }
 
             var parent = GetTargetDirFromArgs(args) ?? DefaultParent;

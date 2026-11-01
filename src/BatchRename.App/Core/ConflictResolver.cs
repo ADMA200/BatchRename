@@ -6,7 +6,7 @@ namespace BatchRename.App.Core;
 /// <summary>
 /// 改名冲突判定（规格书 §8.8）：批内互撞 → 批内循环 → 磁盘已存在 →（可选）冲突自动编号。
 ///
-/// v1.6 从 <see cref="RenameEngine"/> 抽出（REVIEW P3 TODO）。抽出的理由：
+/// v1.6 从 <see cref="RenameEngine"/> 抽出。理由：
 /// 这部分只关心"名字之间 / 名字与磁盘"的冲突，与"规则如何算出新名"（BuildNewName）
 /// 和"名字是否合法"（Validate）是两件事，混在一个 465 行的类里时，改规则容易误伤冲突逻辑。
 ///

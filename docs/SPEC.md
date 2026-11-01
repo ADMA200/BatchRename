@@ -47,7 +47,7 @@ v1.3 依据 M4（观感 + 单实例）的实现与真机实测修订。**#7 是�
 | 4 | §7.4 | 规则栏横排在顶部 | 改为 PowerRename 式：左 300px 操作区（纵向）+ 右预览卡片；撤销/执行贴左栏底部，结果条固定在卡片内底部 |
 | 5 | §5.2 | `GetIcon` 返回 `exe路径,0` | 改返回独立的 **`Assets\menu.ico`**。exe 图标受 Shell 图标缓存影响，替换后菜单可能长期显示旧图，且无法把菜单图标与应用图标分开设计 |
 | 6 | §7.6 | Mutex 名 `Local\BatchRename.SingleInstance.{PackageFamilyName}` | 应用由 Shell `CreateProcess` 启动，`Package.Current` 不可用，改固定名 |
-| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（见 REVIEW §11 对标实测） |
+| 7 | §7.8.7 | 空窗口 80MB / 5000 项 110MB 红线 | **实测 110MB / 204MB**。v1.0 的数字是 `[判断]` 推算而非实测，明显偏低；红线调整为 120MB / 220MB。<br>🔧 **v1.6 复核**：行内 `CheckBox` 换成自绘勾选框后 5000 项降到 **139MB**，红线收紧为 **120MB / 150MB**（§7.8.7）；同状态下 PowerRename 0.102 为 123MB，差距在 C# 运行时基座（实测数据与分解都在 §7.8.7） |
 | 8 | §6.1 | 未提包图标的 plating | 只给默认 logo 时，任务栏会给图标垫一块**强调色底板**（plating），圆角外露出的就是系统 accent color。<br>🔧 **v1.9 更正**：`altform-unplated` 变体**实测未被采纳**（44/150/50 全套生成后仍带底板）。真正的解法是 `AppWindow.SetIcon()`，见 §6.1 |
 
 ## v1.4 补充（M3 遗留项回补）
@@ -832,6 +832,8 @@ bin\publish\                     ← 外部位置根（-ExternalLocation 指向�
 
 ### 6.2 AppxManifest.xml 全文
 
+> 🔧 **本段与 `packaging/AppxManifest.xml` 逐字一致，由 `tools/Verify-Docs.ps1` 校验。**
+
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <Package
@@ -858,7 +860,7 @@ bin\publish\                     ← 外部位置根（-ExternalLocation 指向�
 
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop"
-                        MinVersion="10.0.19041.0"
+                        MinVersion="10.0.22621.0"
                         MaxVersionTested="10.0.26300.0" />
   </Dependencies>
 
@@ -927,7 +929,7 @@ bin\publish\                     ← 外部位置根（-ExternalLocation 指向�
 | `Identity/@ProcessorArchitecture` | `x64` | 与 DLL 位数不一致 → `0x800700C1` |
 | `com:Class/@Path` | 相对**外部位置根** | 写成 `..\bin\publish\...` 直接失败 |
 | `ThreadingModel` | `STA` | 写成 `Both` 会与 dllhost 的 STA 冲突 `[判断]` |
-| `TargetDeviceFamily/@MinVersion` | `10.0.19041.0` | 太高会让旧机装不上（本项目只跑 26H2，可放宽到 `10.0.22621.0`） |
+| `TargetDeviceFamily/@MinVersion` | `10.0.22621.0`（Win11 22H2） | 太高会让旧机装不上；写 `19041` 会让 Win10 也"装得上"但没有新式菜单，实测坑。新式菜单项本身要 26H2（26300），安装器对这档只警告、不拦 |
 | `MaxVersionTested` | 填当前系统 build，如 `10.0.26300.0` | 低于系统版本时某些扩展点可能不激活 |
 | `uap10:AllowExternalContent` | 必须在 `<Properties>` 下 | 放错位置报 `0xC00CE508`（XML schema 校验失败） |
 | `uap10:TrustLevel` / `RuntimeBehavior` | 必须挂在 `<Application>` 上 | 缺了 `RuntimeBehavior` 会当 UWP 应用处理，启动失败 |
@@ -936,6 +938,9 @@ bin\publish\                     ← 外部位置根（-ExternalLocation 指向�
 | `Directory\Background` | **不注册** | 背景右键时 `psia` 为空，命令永远 `ECS_HIDDEN`，注册了纯误导 |
 
 ### 6.4 安装脚本 `tools\Install-Sparse.ps1` 全文
+
+> 🔧 **本段与 `tools/Install-Sparse.ps1` 逐字一致，由 `tools/Verify-Docs.ps1` 校验**（本地 `powershell -File tools/Verify-Docs.ps1`，CI 每次构建都跑）。
+> 改脚本后不同步本段，校验会直接失败并打印差异——v1.5 时就出现过「脚本 159 行、文档还停在 79 行」的漂移。
 
 ```powershell
 #requires -Version 5.1
@@ -947,12 +952,18 @@ bin\publish\                     ← 外部位置根（-ExternalLocation 指向�
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot,
     [string]$PackageName = 'BatchRename.Shell',
     [switch]$SkipExplorerRestart
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 注意：不能在 param 默认值里写 (Split-Path -Parent $PSScriptRoot) ——
+# PowerShell 5.1 求值默认值时自动变量尚未初始化，会得到空串并在 Split-Path 上抛错。
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $PSScriptRoot
+}
 
 $manifestPath = Join-Path $RepoRoot 'packaging\AppxManifest.xml'
 $externalPath = Join-Path $RepoRoot 'bin\publish'
@@ -965,14 +976,17 @@ $externalPath = (Resolve-Path $externalPath).Path
 $manifestPath = (Resolve-Path $manifestPath).Path
 
 # --- 0. 三处 CLSID 一致性自检（省掉 80% 的"菜单不出现"排障） ---
-[xml]$manifest = Get-Content $manifestPath -Raw
+# 注意：AppxManifest.xml 是无 BOM 的 UTF-8。Windows PowerShell 5.1 的 Get-Content
+# 默认按 ANSI（本机 GBK）解码，会把中文 DisplayName 读成乱码并吃掉引号，
+# 导致 [xml] 转换直接抛异常、脚本停在第 28 行。必须显式指定 -Encoding UTF8。
+[xml]$manifest = Get-Content $manifestPath -Raw -Encoding UTF8
 $ns = New-Object System.Xml.XmlNamespaceManager($manifest.NameTable)
 $ns.AddNamespace('f',  'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
 $ns.AddNamespace('com','http://schemas.microsoft.com/appx/manifest/com/windows10')
 $ns.AddNamespace('d5', 'http://schemas.microsoft.com/appx/manifest/desktop/windows10/5')
 
 $classIds = @($manifest.SelectNodes('//com:Class', $ns) | ForEach-Object { $_.Id })
-$verbIds  = @($manifest.SelectNodes('//d5:Verb', $ns)  | ForEach-Object { $_.Clsid })
+$verbIds = @($manifest.SelectNodes('//d5:Verb', $ns)  | ForEach-Object { $_.Clsid })
 
 if ($classIds.Count -eq 0) { throw 'Manifest has no com:Class' }
 foreach ($v in $verbIds) {
@@ -981,7 +995,7 @@ foreach ($v in $verbIds) {
 
 $headerPath = Join-Path $RepoRoot 'src\BatchRename.Shell\ExplorerCommand.h'
 if (Test-Path $headerPath) {
-    $header = Get-Content $headerPath -Raw
+    $header = Get-Content $headerPath -Raw -Encoding UTF8
     foreach ($id in $classIds) {
         if ($header -notmatch [regex]::Escape($id)) {
             throw "CLSID $id not found in ExplorerCommand.h (DECLSPEC_UUID must match manifest)"
@@ -990,12 +1004,63 @@ if (Test-Path $headerPath) {
     Write-Host "[ok] CLSID consistent across manifest and header" -ForegroundColor Green
 }
 
-# --- 1. Publisher 变了必须先卸载（否则 0x80073CFB） ---
+# --- 1. 旧包处理：身份或**安装位置**变了都必须先卸载（否则 0x80073D0B / 0x80073CFB） ---
 $newPublisher = $manifest.Package.Identity.Publisher
-$old = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue
-if ($old -and $old.Publisher -ne $newPublisher) {
-    Write-Host "[warn] Publisher changed ($($old.Publisher) -> $newPublisher); removing old package" -ForegroundColor Yellow
-    Remove-AppxPackage -Package $old.PackageFullName
+$newName      = $manifest.Package.Identity.Name
+$manifestDir  = [IO.Path]::GetFullPath((Split-Path -Parent $manifestPath)).TrimEnd('\')
+
+# 按前缀找历史安装：Identity 改名后旧包的名字不同，只按当前名找会漏掉
+$existing = @(Get-AppxPackage -Name 'BatchRename*' -ErrorAction SilentlyContinue)
+foreach ($old in $existing) {
+    $needRemove = $false
+    $reason = ''
+
+    if ($old.Publisher -ne $newPublisher -or $old.Name -ne $newName) {
+        $needRemove = $true
+        $reason = "身份不一致 (Name: $($old.Name) -> $newName ; Publisher: $($old.Publisher) -> $newPublisher)"
+    }
+    elseif ($old.InstallLocation) {
+        # 稀疏包绑死绝对路径：从 A 目录装过的包不能直接从 B 目录重注册（0x80073D0B）
+        $oldDir = [IO.Path]::GetFullPath($old.InstallLocation).TrimEnd('\')
+        if ($oldDir -ne $manifestDir) {
+            $needRemove = $true
+            $reason = "安装位置变了 ($oldDir -> $manifestDir)"
+        }
+    }
+
+    if (-not $needRemove) { continue }
+
+    Write-Host "[warn] 先卸载旧包：$reason" -ForegroundColor Yellow
+
+    # 卸载前必须释放占用：App 进程 + 加载了 Shell DLL 的 dllhost，
+    # 否则 Remove-AppxPackage 报 0x80073D02（包正在使用中）
+    Get-Process -Name 'BatchRename.App' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name dllhost -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($_.Modules | Where-Object { $_.ModuleName -like 'BatchRename*' }) {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    Start-Sleep -Milliseconds 500
+
+    Remove-AppxPackage -Package $old.PackageFullName -ErrorAction Stop
+    Write-Host "[ok] 已卸载 $($old.PackageFullName)" -ForegroundColor Green
+}
+
+# --- 1.5 同步图标资产到运行时目录 ---
+# 右键菜单的图标由 Shell DLL 按 ModuleDir()\Assets\menu.ico 读取，
+# 而 ModuleDir 是 -ExternalLocation 指向的 bin\publish，不是 packaging\。
+# 以前这里没有拷贝步骤，所以换了 packaging\Assets 里的图标后菜单一直是旧的。
+$assetSource = Join-Path $RepoRoot 'packaging\Assets'
+$assetTarget = Join-Path $externalPath 'Assets'
+if (Test-Path $assetSource) {
+    New-Item -ItemType Directory -Force -Path $assetTarget | Out-Null
+    Copy-Item -Path (Join-Path $assetSource '*') -Destination $assetTarget -Recurse -Force
+    $count = @(Get-ChildItem $assetTarget -File).Count
+    Write-Host "[ok] Assets synced -> $assetTarget ($count files)" -ForegroundColor Green
+} else {
+    Write-Host "[warn] packaging\Assets not found, menu icon may stay stale" -ForegroundColor Yellow
 }
 
 # --- 2. 注册 ---
@@ -1004,7 +1069,26 @@ $pkg = Get-AppxPackage -Name $PackageName
 Write-Host "[ok] Registered $($pkg.PackageFullName)" -ForegroundColor Green
 Write-Host "     Status: $($pkg.Status)"
 
-# --- 3. 重启 Explorer（唯一可靠的让 Shell 重新加载 Verb 表的办法） ---
+# --- 3. SendTo 快捷方式（§10.2 入口②：不受 26H2 新菜单折叠影响，多选也能一次传入全部路径） ---
+$exe = Join-Path $externalPath 'BatchRename.App\BatchRename.App.exe'
+if (Test-Path $exe) {
+    $sendTo = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\SendTo'
+    if (-not (Test-Path $sendTo)) { New-Item -ItemType Directory -Path $sendTo -Force | Out-Null }
+    $lnkPath = Join-Path $sendTo '批量重命名.lnk'
+
+    $wsh = New-Object -ComObject WScript.Shell
+    $sc  = $wsh.CreateShortcut($lnkPath)
+    $sc.TargetPath       = $exe
+    $sc.WorkingDirectory = Split-Path $exe -Parent
+    $sc.IconLocation     = "$exe,0"
+    $sc.Description      = '批量重命名（多选可一次传入全部路径）'
+    $sc.Save()
+    Write-Host "[ok] SendTo: $lnkPath" -ForegroundColor Green
+} else {
+    Write-Host "[warn] 找不到 $exe，跳过 SendTo 快捷方式" -ForegroundColor Yellow
+}
+
+# --- 4. 重启 Explorer（唯一可靠的让 Shell 重新加载 Verb 表的办法） ---
 if (-not $SkipExplorerRestart) {
     Write-Host "[..] Restarting explorer.exe"
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
@@ -1017,37 +1101,10 @@ Write-Host 'Done. Right-click a file in Explorer.' -ForegroundColor Cyan
 Write-Host 'If the item is missing, check:' -ForegroundColor DarkGray
 Write-Host '  - 26H2 puts app extensions under "App extensions" submenu by default' -ForegroundColor DarkGray
 Write-Host '  - Settings > Personalization > Context menu to promote it' -ForegroundColor DarkGray
+Write-Host '  - 兜底入口：右键 > 发送到 > 批量重命名（不受新菜单折叠影响）' -ForegroundColor DarkGray
 ```
 
-> 🔧 **v1.1 补记：ExecutionPolicy 会拦住直接运行**
->
-> 如果 `Get-ExecutionPolicy` 是 `Restricted`（本机默认如此），`& .\tools\Install-Sparse.ps1` 会报：
->
-> ```
-> 无法加载文件 ...\Install-Sparse.ps1，因为在此系统上禁止运行脚本。
-> ```
->
-> 三种绕过方式，按推荐度排序：
->
-> | 方式 | 命令 |
-> |---|---|
-> | 单次提权运行（不改系统设置） | `powershell -ExecutionPolicy Bypass -File .\tools\Install-Sparse.ps1` |
-> | 当前会话临时放开 | `Set-ExecutionPolicy -Scope Process Bypass` 后再运行脚本 |
-> | 永久放开（不推荐） | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
->
-> 脚本本身不需要管理员权限：包注册在任何 IL 都可以，`Add-AppxPackage -Register` 用普通用户即可。
-> **前置条件是「开发者模式」已开启**，否则报 `0x80073CFF`。
->
-> 若实在无法运行脚本，等价的内联命令：
->
-> ```powershell
-> $m = 'E:\Project\BatchRename\packaging\AppxManifest.xml'
-> $e = 'E:\Project\BatchRename\bin\publish'
-> Add-AppxPackage -Register $m -ExternalLocation $e
-> ```
->
 > 注意读取清单做自检时，`Get-Content -Raw` **必须加 `-Encoding UTF8`**，否则中文会被按 ANSI 解码，导致 `[xml]` 转换报「开始标记与结束标记不匹配」。
-
 ### 6.5 卸载脚本 `tools\Uninstall.ps1`
 
 ```powershell
@@ -1910,7 +1967,7 @@ UI 每 100 条 `TryEnqueue` 刷一次进度，不要逐条。**v1.5 起这条已
 
 #### 8.10.1 文件结构
 
-> 🔧 **v1.5：降级为单次操作事务日志。** 只有一个文件：`%LOCALAPPDATA%\BatchRename\journal\last-batch.json`，每次执行**覆盖写**。已删除：7 天有效期、`Prune(20)`、多批次历史、时间戳 `Id`。理由见 REVIEW §7.6（历史批次既没有 UI 入口也没有需求）。
+> 🔧 **v1.5：降级为单次操作事务日志。** 只有一个文件：`%LOCALAPPDATA%\BatchRename\journal\last-batch.json`，每次执行**覆盖写**。已删除：7 天有效期、`Prune(20)`、多批次历史、时间戳 `Id`。理由：历史批次既没有 UI 入口也没有需求。
 
 实际落盘形态（System.Text.Json 默认不改名，所以是 **PascalCase**；`'` 会被转义成 `\u0027`）：
 
@@ -2093,7 +2150,7 @@ M1 卡住时的排障顺序（别乱猜）：
 - [x] 实测资源占用
       → 空窗口 **109MB**、5000 项 **139MB**（v1.3 时为 204MB，v1.5 换掉行内 `CheckBox` 后降到 180MB，
         v1.6 按官方模板复刻勾选框后为 139MB）、进程数 1、关窗无残留。
-        红线最终为 **120 / 150MB**（§7.8.7）；同状态 PowerRename 为 123MB，差距在 C# 基座（REVIEW §11）
+        红线最终为 **120 / 150MB**（§7.8.7）；同状态 PowerRename 为 123MB，差距在 C# 基座
 
 > **M4 期间的两个认知修正**：
 > ① Mica 不是"整窗糊一层半透明"——内容区要不要叠填充层取决于要不要分层，叠了反而出现色块分界；
@@ -2312,3 +2369,17 @@ ie4uinit.exe -show
 | 3 | `docs/REVIEW-2026-11-01.md` | 693 行的评审记录，架构级结论并入 ARCHITECTURE（§6.1 / §10），问题修复记录并入本文 v1.5–v1.10，原文件删除 |
 | 4 | 断言数 | 全库统一为 **124 项**（此前 33 / 67 / 79 / 118 多个版本并存） |
 | 5 | 过时标记 | M1 验收里的「Shift+右键 传统 verb」由 `[ ] 未实现` 改为 `[x] 有意不做` 并写明原因 |
+
+## v1.12 补充（2026-11-02：文档与代码对齐 + 校验脚本）
+
+起因是一次「文件里还有多余或过时的内容么」的排查：发现 §6.4 声称的脚本全文比真文件少 80 行，另有多处引用已删除的评审文档。本轮把口径一次性拉齐，并加了机器校验防止再漂。
+
+| # | 位置 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | §6.4 | 「`Install-Sparse.ps1` 全文」停在 79 行，真文件 159 行（缺 `-Encoding UTF8` 修复、`$RepoRoot` 参数化、**Assets 同步**、SendTo 创建、CLSID 一致性校验、`-SkipExplorerRestart`） | 用真文件重写；并在 §6.2/§6.4 顶部标明「由 `tools/Verify-Docs.ps1` 校验」 |
+| 2 | §v1.3 #7 / §8.10 / §9 | 三处写「见 REVIEW §11 / §7.6」，而该评审文档已在 v1.11 删除 | 改指本文 §7.8.7，或直接写明结论 |
+| 3 | §6.2 | `MinVersion` 写 `10.0.19041.0`（=Win10 2004），README 却要求 26H2 | 清单改 `10.0.22621.0`（Win11 22H2）；安装器加运行时门槛：`< 22621` 直接拦、`< 26300` 只警告「菜单项可能不进主菜单，用发送到」 |
+| 4 | 新增 `tools/Verify-Docs.ps1` | 文档镜像与真文件、断言条数、悬空引用三类漂移全靠人眼 | 三个校验合一个脚本，失败返回 1；CI 在 `dotnet test` 之前执行 |
+| 5 | README | 「失败提示只显示首条原因」（实际是 ≤200 行的失败清单）、「图标旧了就重启资源管理器」（实测还要 kill `dllhost.exe`）、递归限制与常见问题重复 | 三处纠正，删重复段 |
+| 6 | ARCHITECTURE §7.2 / §7.5 | 产物图里有 `packaging/Assets → bin/publish/Assets` 的箭头，却没写谁拷的、不拷会怎样 | 补「由 Install-Sparse.ps1 注册前拷贝」+ 换图标后要清 dllhost 图标缓存；新增 §7.5 文档校验 |
+| 7 | `ConflictResolver.cs` | 注释引用已删除评审文档的 P3 TODO | 去掉引用，保留抽取理由 |

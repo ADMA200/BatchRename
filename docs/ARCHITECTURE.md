@@ -272,6 +272,12 @@ packaging/Assets/        ──▶   bin/publish/Assets/
 
 `bin/publish` 是**外部位置根**，`Add-AppxPackage -Register ... -ExternalLocation` 指向它。清单里所有 `Path` 都相对这个根，**不是**相对清单文件——写成 `..\bin\publish\...` 会直接失败。
 
+> 🔧 **`packaging/Assets/` → `bin\publish\Assets/` 这一步是 `tools/Install-Sparse.ps1` 在注册前拷的**（`Copy-Item -Recurse -Force`，日志打 `[ok] Assets synced -> … (N files)`）。
+>
+> 不拷的后果：右键菜单的 `GetIcon` 返回的是 `ModuleDir()\Assets\menu.ico`，而 `ModuleDir()` 是 **DLL 所在目录**（即 `bin\publish`），不是 `packaging`。以前脚本只 `Add-AppxPackage -Register`，从不拷 Assets，于是**换掉 `packaging/Assets` 里的图标后菜单永远是旧的**，重启 explorer 也没用——这是查了很久才定位的坑。
+>
+> 换完图标还要注意进程内缓存：菜单的 COM 跑在 `dllhost.exe` 里，只重启 explorer 不会换掉它，必须 `Get-Process dllhost | Stop-Process -Force` 之后再重启 explorer。
+
 三个产物必须同时到位，缺一个就出问题：
 
 | 缺什么 | 现象 |
@@ -328,6 +334,20 @@ dotnet src\BatchRename.ShellTest\bin\Release\net10.0-windows10.0.26100.0\BatchRe
 **zip**：顶层直接是 `bin/ packaging/ tools/ 安装.cmd 安装说明.txt`，不带 `<日期>` 目录层。解压到任意目录后双击「安装.cmd」。
 
 **exe**：`installer/BatchRenameSetup` 把该 zip 作为 `EmbeddedResource` 内嵌，运行时自解压到 `<所选目录>\BatchRename`，再调 `Install-Sparse.ps1` 完成注册。支持 `/S` 静默与 `--dir <父目录>`。
+
+### 7.5 文档校验
+
+```powershell
+.\tools\Verify-Docs.ps1    # 全文镜像 + 断言条数一致性，失败返回 1
+```
+
+SPEC §6.2/§6.4 内嵌了 `AppxManifest.xml` 与 `Install-Sparse.ps1` 的**逐字全文**，这种镜像必然漂移（v1.5 就漂过：脚本 159 行、文档还停在 79 行）。脚本做三件事：
+
+1. 从 SPEC 抽出这两个代码块，与真实文件逐行比对（忽略 BOM/CRLF）；
+2. 读 `CoreSuiteTests.ExpectedChecks` 的断言条数，检查 README / ARCHITECTURE / SPEC 里出现的「N 项断言」都是同一个数；
+3. 检查文档里不再引用已删除的 `REVIEW-*.md`。
+
+CI 的 `build-and-test` 会在跑测试前先执行它——文档和代码不一致时构建直接红。
 
 > 两个脚本都依赖 `bin\publish` 已由 `dotnet publish` 生成。
 > csproj 里有 `EnsurePayload` 目标：缺 `payload.zip` 时 publish 会**直接报错**，而不是静默产出一个没有 payload 的 exe（踩过——体积从 97MB 掉到 36MB，看起来像"优化成功"）。

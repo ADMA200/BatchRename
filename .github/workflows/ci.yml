@@ -17,6 +17,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # 文档一致性：SPEC 内嵌的清单/脚本全文 vs 真实文件、断言条数、悬空引用
+      - name: Docs consistency
+        shell: powershell
+        run: .\tools\Verify-Docs.ps1
+
       # 引擎断言（124 条，xUnit）：这是唯一的硬门槛
       - name: Test (Core assertions)
         run: dotnet test tests/BatchRename.Core.Tests/BatchRename.Core.Tests.csproj -c Release
